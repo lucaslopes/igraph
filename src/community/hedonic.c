@@ -304,12 +304,7 @@ static igraph_error_t igraph_i_community_hedonic_fastmovenodes(
     return IGRAPH_SUCCESS;
 }
 
-/* This is the core of the Hedonic Games algorithm and relies on subroutines to
- * perform the three different phases: (1) local moving of nodes, (2)
- * refinement of the partition and (3) aggregation of the network based on the
- * refined partition, using the non-refined partition to create an initial
- * partition for the aggregate network.
- */
+/* This is the core of the Hedonic Games algorithm and relies on a single phase of local moving of nodes. */
 static igraph_error_t igraph_i_community_hedonic(
         const igraph_t *graph,
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
@@ -333,7 +328,6 @@ static igraph_error_t igraph_i_community_hedonic(
     i_membership = membership;
 
     /* Clean membership and count number of *clusters */
-
     IGRAPH_CHECK(igraph_reindex_membership(i_membership, NULL, nb_clusters));
 
     if (*nb_clusters > n) {
@@ -345,7 +339,7 @@ static igraph_error_t igraph_i_community_hedonic(
         changed = false;
 
         /* Get incidence list for fast iteration */
-        IGRAPH_CHECK(igraph_inclist_init( i_graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
+        IGRAPH_CHECK(igraph_inclist_init(i_graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
         IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_node);
 
         /* Move around the nodes in order to increase the quality */
@@ -383,22 +377,13 @@ static igraph_error_t igraph_i_community_hedonic(
  * structure.
  *
  * </para><para>
- * It is similar to the multilevel algorithm, often called the Louvain
- * algorithm, but it is faster and yields higher quality solutions. It can
- * optimize both modularity and the Constant Potts Model, which does not suffer
- * from the resolution-limit (see Tragg, Van Dooren &amp; Nesterov).
+ * It is similar to the first phase of the Leiden algorithm optimizing the Constant Potts Model.
  *
  * </para><para>
- * The Hedonic Games algorithm consists of three phases: (1) local moving of nodes, (2)
- * refinement of the partition and (3) aggregation of the network based on the
- * refined partition, using the non-refined partition to create an initial
- * partition for the aggregate network. In the local move procedure in the
- * Hedonic Games algorithm, only nodes whose neighborhood has changed are visited. Only
- * moves that strictly improve the quality function are made. The refinement is
- * done by restarting from a singleton partition within each cluster and
- * gradually merging the subclusters. When aggregating, a single cluster may
- * then be represented by several nodes (which are the subclusters identified in
- * the refinement).
+ * The Hedonic Games algorithm consists a single phase of local moving of.
+ * In the local move procedure in the Hedonic Games algorithm,
+ * only nodes whose neighborhood has changed are visited.
+ * Only moves that strictly improve the quality function are made.
  *
  * </para><para>
  * The Hedonic Games algorithm provides several guarantees. The Hedonic Games algorithm is
@@ -410,8 +395,7 @@ static igraph_error_t igraph_i_community_hedonic(
  * it is still possible that a subsequent iteration might find some
  * improvement. Each iteration explores different subsets of nodes to consider
  * for moving from one cluster to another. Finally, asymptotically, all subsets
- * of all clusters are guaranteed to be locally optimally assigned. For more
- * details, please see Traag, Waltman &amp; van Eck (2019).
+ * of all clusters are guaranteed to be locally optimally assigned.
  *
  * </para><para>
  * The objective function being optimized is
@@ -434,16 +418,10 @@ static igraph_error_t igraph_i_community_hedonic(
  * References:
  *
  * </para><para>
- * V. A. Traag, L. Waltman, N. J. van Eck:
- * From Louvain to Hedonic Games: guaranteeing well-connected communities.
- * Scientific Reports, 9(1), 5233 (2019).
- * http://dx.doi.org/10.1038/s41598-019-41695-z
- *
- * </para><para>
- * V. A. Traag, P. Van Dooren, and Y. Nesterov:
- * Narrow scope for resolution-limit-free community detection.
- * Phys. Rev. E 84, 016114 (2011).
- * https://doi.org/10.1103/PhysRevE.84.016114
+ * K. Avrachenkov, A. Kondratev, V. Mazalov, D. Rubanov:
+ * Network partitioning algorithms as cooperative games.
+ * Comp. Social Networks 5 (2018).
+ * http://doi:10.1186/s40649-018-0059-5
  *
  * \param graph The input graph. It must be an undirected graph.
  * \param edge_weights Numeric vector containing edge weights. If \c NULL, every edge
@@ -517,7 +495,7 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
         i_edge_weights = (igraph_vector_t*)edge_weights;
     }
 
-    /* Check edge weights to possibly use default */
+    /* Check node weights to possibly use default */
     if (!node_weights) {
         i_node_weights = IGRAPH_CALLOC(1, igraph_vector_t);
         IGRAPH_CHECK_OOM(i_node_weights, "Hedonic Games algorithm failed, could not allocate memory for node weights.");
@@ -529,13 +507,7 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
         i_node_weights = (igraph_vector_t*)node_weights;
     }
 
-    /* Perform actual Hedonic Games algorithm iteratively. We either
-     * perform a fixed number of iterations, or we perform
-     * iterations until the quality remains unchanged. Even if
-     * a single iteration did not change anything, a subsequent
-     * iteration may still find some improvement. This is because
-     * each iteration explores different subsets of nodes.
-     */
+    /* Perform actual Hedonic Games algorithm iteratively. */
     IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
                                             resolution_parameter,
                                             membership, nb_clusters, quality));
