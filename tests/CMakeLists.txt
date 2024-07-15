@@ -653,6 +653,7 @@ add_examples(
   igraph_community_fastgreedy
   igraph_community_label_propagation
   igraph_community_leading_eigenvector
+  igraph_community_hedonic
   igraph_community_leiden
   igraph_community_multilevel
   igraph_community_optimal_modularity
@@ -663,6 +664,7 @@ add_legacy_tests(
   FOLDER tests/unit NAMES
   community_indexing
   community_leiden
+  community_hedonic
   community_label_propagation
   community_label_propagation2
   community_label_propagation3

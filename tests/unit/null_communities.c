@@ -103,6 +103,16 @@ int main(void) {
     IGRAPH_ASSERT(igraph_vector_int_size(&membership) == 0);
     IGRAPH_ASSERT(isnan(m));
 
+    /* Hedonic Games */
+
+    m = 2;
+    igraph_vector_int_resize(&membership, 1);
+
+    igraph_community_hedonic(&g, NULL, NULL, 1, 0.01, 0, 1, &membership, NULL, &m);
+
+    IGRAPH_ASSERT(igraph_vector_int_size(&membership) == 0);
+    IGRAPH_ASSERT(isnan(m));
+
     /* Leiden */
 
     m = 2;

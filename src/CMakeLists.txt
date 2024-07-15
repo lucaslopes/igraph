@@ -164,6 +164,7 @@ add_library(
   community/label_propagation.c
   community/leading_eigenvector.c
   community/leiden.c
+  community/hedonic.c
   community/louvain.c
   community/modularity.c
   community/optimal_modularity.c

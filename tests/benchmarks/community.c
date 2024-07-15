@@ -26,7 +26,7 @@ void run_bench(const igraph_t *graph, const igraph_vector_t *weights,
     igraph_vector_t vertex_weight;
     igraph_integer_t vcount = igraph_vcount(graph);
     igraph_integer_t ecount = igraph_ecount(graph);
-    char msg[256], msg2[128];
+    char msg[256], msg2[128], msg3[128];
 
     igraph_vector_int_init(&membership, vcount);
     igraph_vector_init(&vertex_weight, vcount);
@@ -44,6 +44,9 @@ void run_bench(const igraph_t *graph, const igraph_vector_t *weights,
 
     snprintf(msg, sizeof(msg) / sizeof(msg[0]), "2 Leiden , %s", msg2);
     BENCH(msg, REPEAT(igraph_community_leiden(graph, weights, &vertex_weight, 1.0 / igraph_vector_sum(weights), 0.01, false, 1, &membership, NULL, NULL), rep));
+
+    snprintf(msg, sizeof(msg) / sizeof(msg[0]), "3 Hedonic Games , %s", msg3);
+    BENCH(msg, REPEAT(igraph_community_hedonic(graph, weights, &vertex_weight, 1.0 / igraph_vector_sum(weights), 0.01, false, 1, &membership, NULL, NULL), rep));
 
     printf("\n");
 

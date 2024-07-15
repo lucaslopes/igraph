@@ -140,6 +140,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
             EANV(&graph, "weight", &weights);
 
             igraph_community_fastgreedy(&graph, &weights, &merges, &mv, &membership);
+            igraph_community_hedonic(&graph, &weights, NULL, 1.5, 0.01, false, 2, &membership, &i, &r);
             igraph_community_leiden(&graph, &weights, NULL, 1.5, 0.01, false, 2, &membership, &i, &r);
             igraph_community_multilevel(&graph, &weights, 0.8, &membership, &im, &mv);
 
