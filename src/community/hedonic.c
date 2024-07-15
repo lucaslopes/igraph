@@ -319,9 +319,9 @@ static igraph_error_t igraph_i_community_hedonic(
         IGRAPH_ERROR("Too many communities in membership vector.", IGRAPH_EINVAL);
     }
 
-    /* We start out with no changes, whenever a node is moved, this will be set to true. */
-    *changed = false;
     do {
+        /* We start out with no changes, whenever a node is moved, this will be set to true. */
+        *changed = false;
 
         /* Get incidence list for fast iteration */
         IGRAPH_CHECK(igraph_inclist_init( i_graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
@@ -344,7 +344,7 @@ static igraph_error_t igraph_i_community_hedonic(
         /* We are done iterating, so we destroy the incidence list */
         igraph_inclist_destroy(&edges_per_node);
         IGRAPH_FINALLY_CLEAN(1);
-    } while (continue_clustering);
+    } while (*changed);
 
     /* Free remaining memory */
     igraph_vector_int_list_destroy(&clusters);
