@@ -37,6 +37,91 @@
 
 #include "core/interruption.h"
 
+/* Calculate the Hedonic value of a node */
+static igraph_error_t igraph_i_community_hedonic_value(
+    igraph_real_t edge_weight,
+    igraph_real_t node_weight,
+    igraph_real_t cluster_weight,
+    igraph_real_t resolution_parameter,
+    igraph_real_t *hedonic_value) {
+    
+    *hedonic_value = edge_weight - node_weight * cluster_weight * resolution_parameter;
+
+    return IGRAPH_SUCCESS;
+}
+
+/* Calculate the quality of the partition.
+ *
+ * The quality is defined as
+ *
+ * 1 / 2m sum_ij (A_ij - gamma n_i n_j)d(s_i, s_j)
+ *
+ * where m is the total edge weight, A_ij is the weight of edge (i, j), gamma is
+ * the so-called resolution parameter, n_i is the node weight of node i, s_i is
+ * the cluster of node i and d(x, y) = 1 if and only if x = y and 0 otherwise.
+ *
+ * Note that by setting n_i = k_i the degree of node i and dividing gamma by 2m,
+ * we effectively optimize modularity. By setting n_i = 1 we optimize the
+ * Constant Potts Model.
+ *
+ * This can be represented as a sum over clusters as
+ *
+ * 1 / 2m sum_c (e_c - gamma N_c^2)
+ *
+ * where e_c = sum_ij A_ij d(s_i, c)d(s_j, c) is (twice) the internal edge
+ * weight in cluster c and N_c = sum_i n_i d(s_i, c) is the sum of the node
+ * weights inside cluster c. This is how the quality is calculated in practice.
+ *
+ */
+static igraph_error_t igraph_i_community_hedonic_quality(
+        const igraph_t *graph, const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
+        const igraph_vector_int_t *membership, const igraph_integer_t nb_comms, const igraph_real_t resolution_parameter,
+        igraph_real_t *quality) {
+    igraph_vector_t cluster_weights;
+    igraph_real_t total_edge_weight = 0.0;
+    igraph_eit_t eit;
+    igraph_integer_t i, c, n = igraph_vcount(graph);
+
+    *quality = 0.0;
+
+    /* Create the edgelist */
+    IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_all(IGRAPH_EDGEORDER_ID), &eit));
+    IGRAPH_FINALLY(igraph_eit_destroy, &eit);
+
+    while (!IGRAPH_EIT_END(eit)) {
+        igraph_integer_t e = IGRAPH_EIT_GET(eit);
+        igraph_integer_t from = IGRAPH_FROM(graph, e), to = IGRAPH_TO(graph, e);
+        total_edge_weight += VECTOR(*edge_weights)[e];
+        /* We add the internal edge weights */
+        if (VECTOR(*membership)[from] == VECTOR(*membership)[to]) {
+            *quality += 2 * VECTOR(*edge_weights)[e];
+        }
+        IGRAPH_EIT_NEXT(eit);
+    }
+    igraph_eit_destroy(&eit);
+    IGRAPH_FINALLY_CLEAN(1);
+
+    /* Initialize cluster weights and nb nodes */
+    IGRAPH_VECTOR_INIT_FINALLY(&cluster_weights, n);
+    for (i = 0; i < n; i++) {
+        c = VECTOR(*membership)[i];
+        VECTOR(cluster_weights)[c] += VECTOR(*node_weights)[i];
+    }
+
+    /* We subtract gamma * N_c^2 */
+    for (c = 0; c < nb_comms; c++) {
+        *quality -= resolution_parameter * VECTOR(cluster_weights)[c] * VECTOR(cluster_weights)[c];
+    }
+
+    igraph_vector_destroy(&cluster_weights);
+    IGRAPH_FINALLY_CLEAN(1);
+
+    /* We normalise by 2m */
+    *quality /= (2.0 * total_edge_weight);
+
+    return IGRAPH_SUCCESS;
+}
+
 /* Move nodes in order to improve the quality of a partition.
  *
  * This function considers each node and greedily moves it to a neighboring
@@ -150,10 +235,20 @@ static igraph_error_t igraph_i_community_hedonic_fastmovenodes(
 
         /* Calculate maximum diff */
         best_cluster = current_cluster;
-        max_diff = VECTOR(edge_weights_per_cluster)[current_cluster] - VECTOR(*node_weights)[v] * VECTOR(cluster_weights)[current_cluster] * resolution_parameter;
+        igraph_i_community_hedonic_value(
+            VECTOR(edge_weights_per_cluster)[current_cluster],
+            VECTOR(*node_weights)[v],
+            VECTOR(cluster_weights)[current_cluster],
+            resolution_parameter,
+            &max_diff);
         for (igraph_integer_t i = 0; i < nb_neigh_clusters; i++) {
             c = VECTOR(neighbor_clusters)[i];
-            diff = VECTOR(edge_weights_per_cluster)[c] - VECTOR(*node_weights)[v] * VECTOR(cluster_weights)[c] * resolution_parameter;
+            igraph_i_community_hedonic_value(
+                VECTOR(edge_weights_per_cluster)[c],
+                VECTOR(*node_weights)[v],
+                VECTOR(cluster_weights)[c],
+                resolution_parameter,
+                &diff);
             /* Only consider strictly improving moves.
              * Note that this is important in considering convergence.
              */
@@ -205,78 +300,6 @@ static igraph_error_t igraph_i_community_hedonic_fastmovenodes(
     igraph_dqueue_int_destroy(&unstable_nodes);
     igraph_bitset_destroy(&node_is_stable);
     IGRAPH_FINALLY_CLEAN(9);
-
-    return IGRAPH_SUCCESS;
-}
-
-/* Calculate the quality of the partition.
- *
- * The quality is defined as
- *
- * 1 / 2m sum_ij (A_ij - gamma n_i n_j)d(s_i, s_j)
- *
- * where m is the total edge weight, A_ij is the weight of edge (i, j), gamma is
- * the so-called resolution parameter, n_i is the node weight of node i, s_i is
- * the cluster of node i and d(x, y) = 1 if and only if x = y and 0 otherwise.
- *
- * Note that by setting n_i = k_i the degree of node i and dividing gamma by 2m,
- * we effectively optimize modularity. By setting n_i = 1 we optimize the
- * Constant Potts Model.
- *
- * This can be represented as a sum over clusters as
- *
- * 1 / 2m sum_c (e_c - gamma N_c^2)
- *
- * where e_c = sum_ij A_ij d(s_i, c)d(s_j, c) is (twice) the internal edge
- * weight in cluster c and N_c = sum_i n_i d(s_i, c) is the sum of the node
- * weights inside cluster c. This is how the quality is calculated in practice.
- *
- */
-static igraph_error_t igraph_i_community_hedonic_quality(
-        const igraph_t *graph, const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
-        const igraph_vector_int_t *membership, const igraph_integer_t nb_comms, const igraph_real_t resolution_parameter,
-        igraph_real_t *quality) {
-    igraph_vector_t cluster_weights;
-    igraph_real_t total_edge_weight = 0.0;
-    igraph_eit_t eit;
-    igraph_integer_t i, c, n = igraph_vcount(graph);
-
-    *quality = 0.0;
-
-    /* Create the edgelist */
-    IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_all(IGRAPH_EDGEORDER_ID), &eit));
-    IGRAPH_FINALLY(igraph_eit_destroy, &eit);
-
-    while (!IGRAPH_EIT_END(eit)) {
-        igraph_integer_t e = IGRAPH_EIT_GET(eit);
-        igraph_integer_t from = IGRAPH_FROM(graph, e), to = IGRAPH_TO(graph, e);
-        total_edge_weight += VECTOR(*edge_weights)[e];
-        /* We add the internal edge weights */
-        if (VECTOR(*membership)[from] == VECTOR(*membership)[to]) {
-            *quality += 2 * VECTOR(*edge_weights)[e];
-        }
-        IGRAPH_EIT_NEXT(eit);
-    }
-    igraph_eit_destroy(&eit);
-    IGRAPH_FINALLY_CLEAN(1);
-
-    /* Initialize cluster weights and nb nodes */
-    IGRAPH_VECTOR_INIT_FINALLY(&cluster_weights, n);
-    for (i = 0; i < n; i++) {
-        c = VECTOR(*membership)[i];
-        VECTOR(cluster_weights)[c] += VECTOR(*node_weights)[i];
-    }
-
-    /* We subtract gamma * N_c^2 */
-    for (c = 0; c < nb_comms; c++) {
-        *quality -= resolution_parameter * VECTOR(cluster_weights)[c] * VECTOR(cluster_weights)[c];
-    }
-
-    igraph_vector_destroy(&cluster_weights);
-    IGRAPH_FINALLY_CLEAN(1);
-
-    /* We normalise by 2m */
-    *quality /= (2.0 * total_edge_weight);
 
     return IGRAPH_SUCCESS;
 }
