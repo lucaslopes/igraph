@@ -293,14 +293,12 @@ static igraph_error_t igraph_i_community_hedonic(
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
         igraph_bool_t *changed) {
-    igraph_integer_t i, c, n = igraph_vcount(graph);
+    igraph_integer_t n = igraph_vcount(graph);
     igraph_t *i_graph;
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_vector_int_t *i_membership;
     igraph_vector_int_list_t clusters;
     igraph_inclist_t edges_per_node;
-    igraph_bool_t continue_clustering;
-    igraph_integer_t level = 0;
 
     /* Initialize clusters */
     IGRAPH_VECTOR_INT_LIST_INIT_FINALLY(&clusters, n);
@@ -335,11 +333,6 @@ static igraph_error_t igraph_i_community_hedonic(
                      nb_clusters,
                      i_membership,
                      changed));
-
-        /* We only continue clustering if not all clusters are represented by a
-         * single node yet
-         */
-        continue_clustering = (*nb_clusters < igraph_vcount(i_graph));
 
         /* We are done iterating, so we destroy the incidence list */
         igraph_inclist_destroy(&edges_per_node);
@@ -530,9 +523,9 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
     for (igraph_integer_t itr = 0;
          n_iterations >= 0 ? itr < n_iterations : !changed;
          itr++) {
-        IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
-                                               resolution_parameter, beta,
-                                               membership, nb_clusters, quality, &changed));
+    IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
+                                            resolution_parameter, beta,
+                                            membership, nb_clusters, quality, &changed));
     }
 
     if (!edge_weights) {
