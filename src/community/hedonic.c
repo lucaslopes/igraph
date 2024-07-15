@@ -519,14 +519,10 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
      * iteration may still find some improvement. This is because
      * each iteration explores different subsets of nodes.
      */
-    igraph_bool_t changed = false;
-    for (igraph_integer_t itr = 0;
-         n_iterations >= 0 ? itr < n_iterations : !changed;
-         itr++) {
+    igraph_bool_t changed = true;
     IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
                                             resolution_parameter, beta,
                                             membership, nb_clusters, quality, &changed));
-    }
 
     if (!edge_weights) {
         igraph_vector_destroy(i_edge_weights);
