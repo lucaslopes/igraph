@@ -299,6 +299,7 @@ static igraph_error_t igraph_i_community_hedonic(
     igraph_vector_int_t *i_membership;
     igraph_vector_int_list_t clusters;
     igraph_inclist_t edges_per_node;
+    igraph_bool_t changed = true;
 
     /* Initialize clusters */
     IGRAPH_VECTOR_INT_LIST_INIT_FINALLY(&clusters, n);
@@ -319,7 +320,7 @@ static igraph_error_t igraph_i_community_hedonic(
 
     do {
         /* We start out with no changes, whenever a node is moved, this will be set to true. */
-        *changed = false;
+        changed = false;
 
         /* Get incidence list for fast iteration */
         IGRAPH_CHECK(igraph_inclist_init( i_graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
@@ -332,12 +333,12 @@ static igraph_error_t igraph_i_community_hedonic(
                      resolution_parameter,
                      nb_clusters,
                      i_membership,
-                     changed));
+                     &changed));
 
         /* We are done iterating, so we destroy the incidence list */
         igraph_inclist_destroy(&edges_per_node);
         IGRAPH_FINALLY_CLEAN(1);
-    } while (*changed);
+    } while (changed);
 
     /* Free remaining memory */
     igraph_vector_int_list_destroy(&clusters);
@@ -519,10 +520,9 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
      * iteration may still find some improvement. This is because
      * each iteration explores different subsets of nodes.
      */
-    igraph_bool_t changed = true;
     IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
                                             resolution_parameter, beta,
-                                            membership, nb_clusters, quality, &changed));
+                                            membership, nb_clusters, quality));
 
     if (!edge_weights) {
         igraph_vector_destroy(i_edge_weights);
