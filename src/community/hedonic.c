@@ -293,50 +293,17 @@ static igraph_error_t igraph_i_community_hedonic(
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
         igraph_bool_t *changed) {
-    igraph_integer_t nb_refined_clusters;
     igraph_integer_t i, c, n = igraph_vcount(graph);
-    igraph_t aggregated_graph, *i_graph;
-    igraph_vector_t aggregated_edge_weights, aggregated_node_weights;
-    igraph_vector_int_t aggregated_membership;
+    igraph_t *i_graph;
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_vector_int_t *i_membership;
-    igraph_vector_t tmp_edge_weights, tmp_node_weights;
-    igraph_vector_int_t tmp_membership;
-    igraph_vector_int_t refined_membership;
-    igraph_vector_int_t aggregate_node;
     igraph_vector_int_list_t clusters;
     igraph_inclist_t edges_per_node;
     igraph_bool_t continue_clustering;
     igraph_integer_t level = 0;
 
-    /* Initialize temporary weights and membership to be used in aggregation */
-    IGRAPH_VECTOR_INIT_FINALLY(&tmp_edge_weights, 0);
-    IGRAPH_VECTOR_INIT_FINALLY(&tmp_node_weights, 0);
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&tmp_membership, 0);
-
     /* Initialize clusters */
     IGRAPH_VECTOR_INT_LIST_INIT_FINALLY(&clusters, n);
-
-    /* Initialize aggregate nodes, which initially is identical to simply the
-     * nodes in the graph. */
-    IGRAPH_CHECK(igraph_vector_int_init_range(&aggregate_node, 0, n));
-    IGRAPH_FINALLY(igraph_vector_int_destroy, &aggregate_node);
-
-    /* Initialize refined membership */
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&refined_membership, 0);
-
-    /* Initialize aggregated graph */
-    IGRAPH_CHECK(igraph_empty(&aggregated_graph, 0, IGRAPH_UNDIRECTED));
-    IGRAPH_FINALLY(igraph_destroy, &aggregated_graph);
-
-    /* Initialize aggregated edge weights */
-    IGRAPH_VECTOR_INIT_FINALLY(&aggregated_edge_weights, 0);
-
-    /* Initialize aggregated node weights */
-    IGRAPH_VECTOR_INIT_FINALLY(&aggregated_node_weights, 0);
-
-    /* Initialize aggregated membership */
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&aggregated_membership, 0);
 
     /* Set actual graph, weights and membership to be used. */
     i_graph = (igraph_t*)graph;
@@ -379,21 +346,9 @@ static igraph_error_t igraph_i_community_hedonic(
         IGRAPH_FINALLY_CLEAN(1);
     } while (continue_clustering);
 
-    /* Free aggregated graph and associated vectors */
-    igraph_vector_int_destroy(&aggregated_membership);
-    igraph_vector_destroy(&aggregated_node_weights);
-    igraph_vector_destroy(&aggregated_edge_weights);
-    igraph_destroy(&aggregated_graph);
-    IGRAPH_FINALLY_CLEAN(4);
-
     /* Free remaining memory */
-    igraph_vector_int_destroy(&refined_membership);
-    igraph_vector_int_destroy(&aggregate_node);
     igraph_vector_int_list_destroy(&clusters);
-    igraph_vector_int_destroy(&tmp_membership);
-    igraph_vector_destroy(&tmp_node_weights);
-    igraph_vector_destroy(&tmp_edge_weights);
-    IGRAPH_FINALLY_CLEAN(6);
+    IGRAPH_FINALLY_CLEAN(1);
 
     /* Calculate quality */
     if (quality) {
