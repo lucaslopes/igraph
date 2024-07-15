@@ -34,7 +34,7 @@ void run_hedonic_CPM(const igraph_t *graph, const igraph_vector_t *edge_weights,
     /* Initialize with singleton partition. */
     igraph_vector_int_init(&membership, igraph_vcount(graph));
 
-    igraph_community_hedonic(graph, edge_weights, NULL, resolution_parameter, 0.01, 0, 1, &membership, &nb_clusters, &quality);
+    igraph_community_hedonic(graph, edge_weights, NULL, resolution_parameter, 0, &membership, &nb_clusters, &quality);
 
     printf("Hedonic Games found %" IGRAPH_PRId " clusters using CPM (resolution parameter=%.2f), quality is %.4f.\n", nb_clusters, resolution_parameter, quality);
 
@@ -60,7 +60,7 @@ void run_hedonic_modularity(igraph_t *graph, igraph_vector_t *edge_weights) {
     /* Initialize with singleton partition. */
     igraph_vector_int_init(&membership, igraph_vcount(graph));
 
-    igraph_community_hedonic(graph, edge_weights, &strength, 1.0 / (2 * m), 0.01, 0, 1, &membership, &nb_clusters, &quality);
+    igraph_community_hedonic(graph, edge_weights, &strength, 1.0 / (2 * m), 0, &membership, &nb_clusters, &quality);
 
     if (isnan(quality)) {
         printf("Hedonic Games found %" IGRAPH_PRId " clusters using modularity, quality is nan.\n", nb_clusters);

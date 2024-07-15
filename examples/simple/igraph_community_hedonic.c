@@ -42,7 +42,7 @@ int main(void) {
 
     /* Perform Hedonic Games algorithm using CPM for 1 iteration */
     igraph_vector_int_init(&membership, igraph_vcount(&graph));
-    igraph_community_hedonic(&graph, NULL, NULL, 0.05, 0.01, 0, 1, &membership, &nb_clusters, &quality);
+    igraph_community_hedonic(&graph, NULL, NULL, 0.05, 0, &membership, &nb_clusters, &quality);
 
     printf("Hedonic Games found %" IGRAPH_PRId " clusters using CPM (resolution parameter 0.05), quality is %.4f.\n", nb_clusters, quality);
     printf("Membership: ");
@@ -50,7 +50,7 @@ int main(void) {
     printf("\n");
 
     /* Start from existing membership for 10 iterations to improve it further */
-    igraph_community_hedonic(&graph, NULL, NULL, 0.05, 0.01, 1, 10, &membership, &nb_clusters, &quality);
+    igraph_community_hedonic(&graph, NULL, NULL, 0.05, 1, &membership, &nb_clusters, &quality);
 
     printf("Iterated Hedonic Games, using CPM (resolution parameter 0.05), quality is %.4f.\n", quality);
     printf("Membership: ");
@@ -66,7 +66,7 @@ int main(void) {
     }
 
     /* Perform Hedonic Games algorithm using modularity until stable iteration */
-    igraph_community_hedonic(&graph, NULL, &weights, 1.0 / (2 * igraph_ecount(&graph)), 0.01, 0, -1, &membership, &nb_clusters, &quality);
+    igraph_community_hedonic(&graph, NULL, &weights, 1.0 / (2 * igraph_ecount(&graph)), 0, &membership, &nb_clusters, &quality);
 
     printf("Hedonic Games found %" IGRAPH_PRId " clusters using modularity, quality is %.4f.\n", nb_clusters, quality);
     printf("Membership: ");

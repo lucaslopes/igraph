@@ -290,9 +290,8 @@ static igraph_error_t igraph_i_community_hedonic_quality(
 static igraph_error_t igraph_i_community_hedonic(
         const igraph_t *graph,
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
-        const igraph_real_t resolution_parameter, const igraph_real_t beta,
-        igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
-        igraph_bool_t *changed) {
+        const igraph_real_t resolution_parameter,
+        igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_integer_t n = igraph_vcount(graph);
     igraph_t *i_graph;
     igraph_vector_t *i_edge_weights, *i_node_weights;
@@ -431,14 +430,9 @@ static igraph_error_t igraph_i_community_hedonic(
  * \param resolution_parameter The resolution parameter used, which is
  *    represented by gamma in the objective function mentioned in the
  *    documentation.
- * \param beta The randomness used in the refinement step when merging. A small
- *    amount of randomness (\c beta = 0.01) typically works well.
  * \param start Start from membership vector. If this is true, the optimization
  *    will start from the provided membership vector. If this is false, the
  *    optimization will start from a singleton partition.
- * \param n_iterations Iterate the core Hedonic Games algorithm for the indicated number
- *    of times. If this is a negative number, it will continue iterating until
- *    an iteration did not change the clustering.
  * \param membership The membership vector. This is both used as the initial
  *    membership from which optimisation starts and is updated in place. It
  *    must hence be properly initialized. When finding clusters from scratch it
@@ -457,8 +451,7 @@ static igraph_error_t igraph_i_community_hedonic(
  */
 igraph_error_t igraph_community_hedonic(const igraph_t *graph,
                             const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
-                            const igraph_real_t resolution_parameter, const igraph_real_t beta, const igraph_bool_t start,
-                            const igraph_integer_t n_iterations,
+                            const igraph_real_t resolution_parameter, const igraph_bool_t start,
                             igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -521,7 +514,7 @@ igraph_error_t igraph_community_hedonic(const igraph_t *graph,
      * each iteration explores different subsets of nodes.
      */
     IGRAPH_CHECK(igraph_i_community_hedonic(graph, i_edge_weights, i_node_weights,
-                                            resolution_parameter, beta,
+                                            resolution_parameter,
                                             membership, nb_clusters, quality));
 
     if (!edge_weights) {
