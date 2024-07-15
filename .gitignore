@@ -8,3 +8,5 @@
 /build
 /build-*
 /tools/**/*.pyc
+
+.DS_Store
