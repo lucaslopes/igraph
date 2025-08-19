@@ -57,6 +57,7 @@ static igraph_error_t igraph_i_community_leiden_fastmovenodes(
         const igraph_inclist_t *edges_per_node,
         const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter,
+        const igraph_bool_t *allow_isolation,
         igraph_integer_t *nb_clusters,
         igraph_vector_int_t *membership,
         igraph_bool_t *changed) {
@@ -127,10 +128,14 @@ static igraph_error_t igraph_i_community_leiden_fastmovenodes(
         }
 
         /* Find out neighboring clusters */
-        c = igraph_stack_int_top(&empty_clusters);
-        VECTOR(neighbor_clusters)[0] = c;
-        IGRAPH_BIT_SET(neighbor_cluster_added, c);
-        nb_neigh_clusters = 1;
+        if (*allow_isolation) {
+            c = igraph_stack_int_top(&empty_clusters);
+            VECTOR(neighbor_clusters)[0] = c;
+            IGRAPH_BIT_SET(neighbor_cluster_added, c);
+            nb_neigh_clusters = 1;
+        } else {
+            nb_neigh_clusters = 0;
+        }
 
         /* Determine the edge weight to each neighboring cluster */
         edges = igraph_inclist_get(edges_per_node, v);
@@ -682,7 +687,7 @@ static igraph_error_t igraph_i_community_leiden(
         const igraph_t *graph,
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
-        igraph_bool_t only_local_moving,
+        const igraph_bool_t *allow_isolation, igraph_bool_t only_local_moving,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
         igraph_bool_t *changed) {
     igraph_integer_t nb_refined_clusters;
@@ -757,6 +762,7 @@ static igraph_error_t igraph_i_community_leiden(
                      &edges_per_node,
                      i_edge_weights, i_node_weights,
                      resolution_parameter,
+                     allow_isolation,
                      nb_clusters,
                      i_membership,
                      changed));
@@ -951,6 +957,10 @@ static igraph_error_t igraph_i_community_leiden(
  * \param n_iterations Iterate the core Leiden algorithm for the indicated number
  *    of times. If this is a negative number, it will continue iterating until
  *    an iteration did not change the clustering.
+ * \param allow_isolation If \c true, nodes are allowed to move to empty 
+ *    communities, effectively creating new clusters. If \c false, nodes 
+ *    can only move to existing non-empty communities, preventing the 
+ *    formation of new clusters.
  * \param only_local_moving If \c true, only the local moving phase (phase 1) 
  *    of the Leiden algorithm is executed. This skips the refinement phase 
  *    (phase 2) and the aggregation phase (phase 3), resulting in a faster 
@@ -975,7 +985,8 @@ static igraph_error_t igraph_i_community_leiden(
 igraph_error_t igraph_community_leiden(const igraph_t *graph,
                             const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
                             const igraph_real_t resolution_parameter, const igraph_real_t beta, const igraph_bool_t start,
-                            const igraph_integer_t n_iterations, const igraph_bool_t only_local_moving,
+                            const igraph_integer_t n_iterations,
+                            const igraph_bool_t allow_isolation, const igraph_bool_t only_local_moving,
                             igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -1044,7 +1055,8 @@ igraph_error_t igraph_community_leiden(const igraph_t *graph,
         only_local_moving || n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
         IGRAPH_CHECK(igraph_i_community_leiden(graph, i_edge_weights, i_node_weights,
-                                               resolution_parameter, beta, only_local_moving,
+                                               resolution_parameter, beta,
+                                               &allow_isolation, only_local_moving,
                                                membership, nb_clusters, quality, &changed));
     }
 
