@@ -682,6 +682,7 @@ static igraph_error_t igraph_i_community_leiden(
         const igraph_t *graph,
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
+        igraph_bool_t only_local_moving,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
         igraph_bool_t *changed) {
     igraph_integer_t nb_refined_clusters;
@@ -761,9 +762,9 @@ static igraph_error_t igraph_i_community_leiden(
                      changed));
 
         /* We only continue clustering if not all clusters are represented by a
-         * single node yet
+         * single node yet and only_local_moving is false.
          */
-        continue_clustering = (*nb_clusters < igraph_vcount(i_graph));
+        continue_clustering = only_local_moving ? !only_local_moving : (*nb_clusters < igraph_vcount(i_graph));
 
         if (continue_clustering) {
             /* Set original membership */
@@ -950,6 +951,11 @@ static igraph_error_t igraph_i_community_leiden(
  * \param n_iterations Iterate the core Leiden algorithm for the indicated number
  *    of times. If this is a negative number, it will continue iterating until
  *    an iteration did not change the clustering.
+ * \param only_local_moving If \c true, only the local moving phase (phase 1) 
+ *    of the Leiden algorithm is executed. This skips the refinement phase 
+ *    (phase 2) and the aggregation phase (phase 3), resulting in a faster 
+ *    but potentially lower quality clustering. If \c false, the complete 
+ *    three-phase Leiden algorithm is executed.
  * \param membership The membership vector. This is both used as the initial
  *    membership from which optimisation starts and is updated in place. It
  *    must hence be properly initialized. When finding clusters from scratch it
@@ -969,7 +975,7 @@ static igraph_error_t igraph_i_community_leiden(
 igraph_error_t igraph_community_leiden(const igraph_t *graph,
                             const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
                             const igraph_real_t resolution_parameter, const igraph_real_t beta, const igraph_bool_t start,
-                            const igraph_integer_t n_iterations,
+                            const igraph_integer_t n_iterations, const igraph_bool_t only_local_moving,
                             igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -1033,10 +1039,10 @@ igraph_error_t igraph_community_leiden(const igraph_t *graph,
      */
     igraph_bool_t changed = true;
     for (igraph_integer_t itr = 0;
-         n_iterations < 0 ? changed : itr < n_iterations;
+        only_local_moving || n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
         IGRAPH_CHECK(igraph_i_community_leiden(graph, i_edge_weights, i_node_weights,
-                                               resolution_parameter, beta,
+                                               resolution_parameter, beta, only_local_moving,
                                                membership, nb_clusters, quality, &changed));
     }
 
