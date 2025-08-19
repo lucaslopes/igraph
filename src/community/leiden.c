@@ -985,19 +985,21 @@ igraph_error_t igraph_community_leiden(const igraph_t *graph,
         nb_clusters = &i_nb_clusters;
     }
 
-    if (start) {
-        if (!membership) {
-            IGRAPH_ERROR("Cannot start optimization if membership is missing.", IGRAPH_EINVAL);
-        }
+    if (!membership) {
+        IGRAPH_ERROR("Cannot start optimization if membership is missing.", IGRAPH_EINVAL);
+    }
 
+    if (start) {
         if (igraph_vector_int_size(membership) != n) {
             IGRAPH_ERROR("Initial membership length does not equal the number of vertices.", IGRAPH_EINVAL);
         }
+        /* When starting from a provided membership, ensure indices are valid/compact */
+        IGRAPH_CHECK(igraph_reindex_membership(membership, NULL, NULL));
     } else {
-        if (!membership)
-            IGRAPH_ERROR("Membership vector should be supplied and initialized, "
-                         "even when not starting optimization from it.", IGRAPH_EINVAL);
-
+        /* If not starting from provided membership, initialize to singleton partition. */
+        if (igraph_vector_int_size(membership) != n) {
+            IGRAPH_CHECK(igraph_vector_int_resize(membership, n));
+        }
         IGRAPH_CHECK(igraph_vector_int_range(membership, 0, n));
     }
 
