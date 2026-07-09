@@ -9,6 +9,7 @@
  - `igraph_mycielskian()` and `igraph_mycielski_graph()` compute a Mycielski transformation of a graph, and a Mycielski graph, respectively. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2741!
  - `igraph_path_graph()` is a convenience wrapper for `igraph_ring()` with `circular=false`.
  - `igraph_cycle_graph()` is a convenience wrapper for `igraph_ring()` with `circular=true`.
+ - `igraph_community_leiden()` is the single public Leiden entry point for both disjoint and overlapping clustering. Mode is selected by `max_memberships`: `1` runs the classical disjoint algorithm into a membership vector; values greater than 1 run overlapping Leiden-CPM into a memberships list.
 
 ### Fixed
 

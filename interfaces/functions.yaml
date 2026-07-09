@@ -1755,11 +1755,14 @@ igraph_community_leiden:
     PARAMS: |-
         GRAPH graph, OPTIONAL EDGEWEIGHTS weights,
         OPTIONAL VERTEXWEIGHTS vertex_weights,
-        REAL resolution, REAL beta=0.01, BOOLEAN start, INTEGER n_iterations=2,
-        BOOLEAN only_local_moving=False,
+        REAL resolution, REAL beta=0.01, INTEGER max_memberships=1,
+        BOOLEAN start, INTEGER n_iterations=2,
+        BOOLEAN allow_isolation=True, BOOLEAN only_local_moving=False,
         OPTIONAL INOUT VECTOR_INT membership,
+        OPTIONAL INOUT VECTOR_INT_LIST memberships,
         OUT INTEGER nb_clusters, OUT REAL quality
     DEPS: weights ON graph, vertex_weights ON graph
+
 
 igraph_split_join_distance:
     PARAMS: |-
