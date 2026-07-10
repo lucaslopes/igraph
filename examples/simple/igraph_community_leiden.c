@@ -43,12 +43,7 @@ int main(void) {
 
     /* Perform Leiden algorithm using CPM for 1 iteration */
     igraph_vector_int_init(&membership, igraph_vcount(&graph));
-    igraph_community_leiden(&graph, NULL, NULL, NULL,
-                            /* resolution */ 0.05,
-                            /* beta */ 0.01,
-                            /* start */ false,
-                            /* iterations */ 1,
-                            &membership, &nb_clusters, &quality);
+    igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01, 1, 0, 1, 1, 0, &membership, NULL, &nb_clusters, &quality);
 
     printf("Leiden found %" IGRAPH_PRId " clusters using CPM (resolution parameter 0.05), quality is %.4f.\n", nb_clusters, quality);
     printf("Membership: ");
@@ -56,12 +51,7 @@ int main(void) {
     printf("\n");
 
     /* Start from existing membership for 10 iterations to improve it further */
-    igraph_community_leiden(&graph, NULL, NULL, NULL,
-                            /* resolution */ 0.05,
-                            /* beta */ 0.01,
-                            /* start */ true,
-                            /* iterations */ 10,
-                            &membership, &nb_clusters, &quality);
+    igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01, 1, 1, 10, 1, 0, &membership, NULL, &nb_clusters, &quality);
 
     printf("Iterated Leiden, using CPM (resolution parameter 0.05), quality is %.4f.\n", quality);
     printf("Membership: ");
@@ -73,12 +63,7 @@ int main(void) {
     igraph_strength(&graph, &vertex_weights, igraph_vss_all(), IGRAPH_ALL, IGRAPH_LOOPS, NULL);
 
     /* Perform Leiden algorithm using modularity until stable iteration */
-    igraph_community_leiden(&graph, NULL, &vertex_weights, NULL,
-                            /* resolution */ 1.0 / (2 * igraph_ecount(&graph)),
-                            /* beta */ 0.01,
-                            /* start */ false,
-                            /* iterations */ -1,
-                            &membership, &nb_clusters, &quality);
+    igraph_community_leiden(&graph, NULL, &vertex_weights, NULL, 1.0 / (2 * igraph_ecount(&graph)), 0.01, 1, 0, -1, 1, 0, &membership, NULL, &nb_clusters, &quality);
 
     printf("Leiden found %" IGRAPH_PRId " clusters using modularity, quality is %.4f.\n", nb_clusters, quality);
     printf("Membership: ");
@@ -108,9 +93,15 @@ int main(void) {
     igraph_community_leiden(&graph, NULL, &vertex_out_weights, &vertex_in_weights,
                             /* resolution */ 1.0 / igraph_ecount(&graph),
                             /* beta */ 0.01,
+                            /* max_memberships */ 1,
                             /* start */ false,
                             /* iterations */ 2,
-                            &membership, &nb_clusters, &quality);
+                            /* allow_isolation */ true,
+                            /* only_local_moving */ false,
+                            &membership,
+                            /* memberships */ NULL,
+                            &nb_clusters,
+                            &quality);
 
     printf("Leiden found %" IGRAPH_PRId " clusters using modularity, quality is %.4f.\n", nb_clusters, quality);
     printf("Membership: ");

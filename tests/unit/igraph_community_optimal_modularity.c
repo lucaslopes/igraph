@@ -51,7 +51,16 @@ void verify_with_leiden(const igraph_t *graph, const igraph_vector_t *weights,
     for (int i=0; i < 10; i++) {
         igraph_community_leiden(graph, weights, &vertex_out_weights, directed ? &vertex_in_weights : NULL,
                                 resolution / (directed_multiplier * m),
-                                0.01, false, 2, &leiden_membership, NULL, &Q);
+                                0.01,
+                                /* max_memberships */ 1,
+                                /* start */ false,
+                                /* iterations */ 2,
+                                /* allow_isolation */ true,
+                                /* only_local_moving */ false,
+                                &leiden_membership,
+                                /* memberships */ NULL,
+                                /* nb_clusters */ NULL,
+                                &Q);
         if (Q > maxQ) {
             maxQ = Q;
         }
