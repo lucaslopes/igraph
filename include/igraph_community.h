@@ -245,10 +245,15 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden(
         const igraph_vector_t *vertex_in_weights,
         igraph_real_t resolution,
         igraph_real_t beta,
+        igraph_int_t max_memberships,
         igraph_bool_t start,
         igraph_int_t n_iterations,
+        igraph_bool_t allow_isolation,
+        igraph_bool_t local_move_only,
         igraph_vector_int_t *membership,
-        igraph_int_t *nb_clusters, igraph_real_t *quality);
+        igraph_vector_int_list_t *memberships,
+        igraph_int_t *nb_clusters,
+        igraph_real_t *quality);
 
 IGRAPH_EXPORT igraph_error_t igraph_community_leiden_simple(
         const igraph_t *graph,
@@ -261,6 +266,7 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden_simple(
         igraph_vector_int_t *membership,
         igraph_int_t *nb_clusters,
         igraph_real_t *quality);
+
 
 /* -------------------------------------------------- */
 /* Community Structure Comparison                     */
