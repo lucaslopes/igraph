@@ -1020,6 +1020,105 @@ static void test_positive_budget_original_quality_guard(void) {
     printf("Positive-budget original-quality guard: OK\n\n");
 }
 
+static void test_overlapping_diagnostic_trace(void) {
+    igraph_t graph;
+    igraph_vector_int_list_t memberships;
+    igraph_matrix_t move_trace, projection_trace;
+    igraph_matrix_t failed_move_trace, failed_projection_trace;
+    igraph_integer_t nb_clusters;
+    igraph_real_t quality;
+
+    IGRAPH_ASSERT(igraph_small(
+        &graph, 11, IGRAPH_UNDIRECTED,
+        0, 1, 0, 2, 0, 3, 0, 4, 1, 2, 1, 3, 1, 4, 2, 3, 2, 4, 3, 4,
+        5, 6, 5, 7, 5, 8, 5, 9, 6, 7, 6, 8, 6, 9, 7, 8, 7, 9, 8, 9,
+        10, 0, 10, 1, 10, 2, 10, 5, 10, 6, 10, 7,
+        -1) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 0) == IGRAPH_SUCCESS);
+
+    IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 20260912) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_community_leiden_with_diagnostics(
+        &graph, NULL, NULL, NULL, 0.2, 0.01,
+        3, false, 2, true, false, &memberships, &nb_clusters, &quality,
+        &move_trace, &projection_trace) == IGRAPH_SUCCESS);
+
+    IGRAPH_ASSERT(igraph_matrix_ncol(&move_trace) ==
+                  IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH);
+    IGRAPH_ASSERT(igraph_matrix_ncol(&projection_trace) ==
+                  IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH);
+    IGRAPH_ASSERT(igraph_matrix_nrow(&move_trace) > 0);
+    IGRAPH_ASSERT(igraph_matrix_nrow(&projection_trace) > 0);
+
+    for (igraph_integer_t row = 0; row < igraph_matrix_nrow(&move_trace); row++) {
+        IGRAPH_ASSERT(MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA) > 0.0);
+        IGRAPH_ASSERT(MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA) > 0.0);
+        IGRAPH_ASSERT(MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR) <=
+                      MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE));
+        IGRAPH_ASSERT(MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER) >=
+                      MATRIX(move_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE));
+    }
+
+    for (igraph_integer_t row = 0; row < igraph_matrix_nrow(&projection_trace); row++) {
+        const igraph_bool_t accepted = (igraph_bool_t) MATRIX(
+            projection_trace, row,
+            IGRAPH_LEIDEN_OVERLAP_PROJECTION_ACCEPTED);
+        const igraph_real_t committed = MATRIX(
+            projection_trace, row,
+            IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_COMMITTED);
+        const igraph_real_t expected = MATRIX(
+            projection_trace, row,
+            accepted ? IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_PROJECTED :
+                       IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE);
+
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_WEIGHT) > 0.0);
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_WEIGHT) > 0.0);
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_COUNT) >=
+                      igraph_vcount(&graph));
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_EDGE_COUNT) >=
+                      igraph_ecount(&graph));
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_COLLISION_COUNT) >= 0.0);
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_IDENTITY_ABS_ERROR) <=
+                      1e-12);
+        IGRAPH_ASSERT(igraph_almost_equals(committed, expected, 1e-12));
+        IGRAPH_ASSERT(committed + 1e-12 >=
+                      MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE));
+    }
+
+    assert_overlapping_cover_valid(&memberships, 11, 3);
+    IGRAPH_ASSERT(isfinite(quality));
+
+    CHECK_ERROR(igraph_community_leiden_with_diagnostics(
+        &graph, NULL, NULL, NULL, IGRAPH_NAN, 0.01,
+        3, true, 1, true, false, &memberships, &nb_clusters, &quality,
+        &failed_move_trace, &failed_projection_trace), IGRAPH_EINVAL);
+    VERIFY_FINALLY_STACK();
+
+    CHECK_ERROR(igraph_community_leiden_with_diagnostics(
+        &graph, NULL, NULL, NULL, 0.2, 0.01,
+        1, true, 1, true, false, &memberships, &nb_clusters, &quality,
+        &failed_move_trace, &failed_projection_trace), IGRAPH_EINVAL);
+    VERIFY_FINALLY_STACK();
+
+    igraph_matrix_destroy(&projection_trace);
+    igraph_matrix_destroy(&move_trace);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_destroy(&graph);
+    VERIFY_FINALLY_STACK();
+}
+
 static igraph_integer_t interruption_poll_count;
 static igraph_integer_t interrupt_after_poll;
 
@@ -1279,6 +1378,7 @@ int main(void) {
     test_nash_overlapping_parameter_matrix();
     test_overlapping_input_contract();
     test_positive_budget_original_quality_guard();
+    test_overlapping_diagnostic_trace();
     test_overlapping_interrupt_unwind();
 
     /* Overlapping Leiden via the unified public API. Each call reseeds the

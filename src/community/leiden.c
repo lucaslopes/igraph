@@ -110,6 +110,57 @@ static igraph_uint_t igraph_i_leiden_overlap_membership_hash(
     return hash;
 }
 
+typedef struct {
+    igraph_matrix_t *move_trace;
+    igraph_matrix_t *projection_trace;
+    igraph_integer_t stage;
+    igraph_integer_t move_sequence;
+    igraph_real_t original_weight;
+} igraph_i_leiden_overlap_trace_t;
+
+typedef struct {
+    igraph_real_t original_weight;
+    igraph_real_t token_weight;
+    igraph_real_t quality_after_local;
+    igraph_real_t original_unnormalized;
+    igraph_real_t token_initial_quality;
+    igraph_real_t token_initial_unnormalized;
+    igraph_real_t token_identity_abs_error;
+    igraph_real_t token_final_quality;
+    igraph_real_t quality_projected;
+    igraph_integer_t token_count;
+    igraph_integer_t token_edge_count;
+    igraph_integer_t collision_count;
+    igraph_bool_t local_changed;
+    igraph_bool_t token_changed;
+    igraph_bool_t dedup_changed;
+} igraph_i_leiden_overlap_checkpoint_t;
+
+static igraph_error_t igraph_i_leiden_overlap_trace_append(
+        igraph_matrix_t *trace,
+        const igraph_real_t *values,
+        igraph_integer_t width) {
+    const igraph_integer_t row = igraph_matrix_nrow(trace);
+
+    if (igraph_matrix_ncol(trace) != width) {
+        IGRAPH_ERROR("Overlapping Leiden diagnostic trace width mismatch.",
+                     IGRAPH_EINVAL);
+    }
+    IGRAPH_CHECK(igraph_matrix_add_rows(trace, 1));
+    for (igraph_integer_t column = 0; column < width; column++) {
+        MATRIX(*trace, row, column) = values[column];
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_error_t igraph_i_community_leiden_overlap_quality(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *node_weights,
+        igraph_vector_int_list_t *memberships,
+        const igraph_real_t resolution_parameter,
+        igraph_real_t *quality);
+
 /* Forward declaration for the overlapping driver. */
 static igraph_error_t igraph_i_community_leiden_run_overlapping(
         const igraph_t *graph,
@@ -124,7 +175,9 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships,
         igraph_int_t *nb_clusters,
-        igraph_real_t *quality);
+        igraph_real_t *quality,
+        igraph_matrix_t *move_trace,
+        igraph_matrix_t *projection_trace);
 
 /* Among active communities not yet marked as candidates, return the one
  * that extremizes the omitted CPM gain g = -resolution * mass(c).
@@ -1611,8 +1664,78 @@ igraph_error_t igraph_community_leiden(
                    graph, edge_weights, vertex_out_weights,
                    resolution, beta, max_memberships, start, n_iterations,
                    allow_isolation, local_move_only,
-                   memberships, nb_clusters, quality);
+                   memberships, nb_clusters, quality,
+                   /*move_trace=*/ NULL, /*projection_trace=*/ NULL);
     }
+}
+
+/**
+ * \function igraph_community_leiden_with_diagnostics
+ * \brief Runs overlapping Leiden and records opt-in validation traces.
+ *
+ * This diagnostic entry point has the same overlapping semantics as
+ * \ref igraph_community_leiden(), but requires \p max_memberships greater
+ * than one and returns two newly initialized matrices. The accepted-move
+ * trace compares the mover's predicted unnormalized potential delta with a
+ * direct original-graph recomputation after every accepted move. The
+ * projection trace records original and token total edge weights separately,
+ * verifies the frozen-multiplicity unnormalized identity, counts same-origin
+ * token collisions, and records whether each projected proposal was committed
+ * or restored by the original-space quality guard.
+ *
+ * This path is intended for bounded validation fixtures. Direct quality
+ * recomputation after every accepted move is deliberately expensive. A
+ * negative move-trace stage identifies a final certificate sweep; nonnegative
+ * stages identify zero-based outer iterations. Both output matrices are
+ * initialized by this function and must be destroyed by the caller.
+ */
+igraph_error_t igraph_community_leiden_with_diagnostics(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *vertex_out_weights,
+        const igraph_vector_t *vertex_in_weights,
+        igraph_real_t resolution,
+        igraph_real_t beta,
+        igraph_int_t max_memberships,
+        igraph_bool_t start,
+        igraph_int_t n_iterations,
+        igraph_bool_t allow_isolation,
+        igraph_bool_t local_move_only,
+        igraph_vector_int_list_t *memberships,
+        igraph_int_t *nb_clusters,
+        igraph_real_t *quality,
+        igraph_matrix_t *move_trace,
+        igraph_matrix_t *projection_trace) {
+    if (max_memberships <= 1) {
+        IGRAPH_ERROR("Overlapping Leiden diagnostics require max_memberships > 1.",
+                     IGRAPH_EINVAL);
+    }
+    if (!move_trace || !projection_trace) {
+        IGRAPH_ERROR("Overlapping Leiden diagnostics require both trace outputs.",
+                     IGRAPH_EINVAL);
+    }
+    IGRAPH_MATRIX_INIT_FINALLY(move_trace, 0,
+                               IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH);
+    IGRAPH_MATRIX_INIT_FINALLY(projection_trace, 0,
+                               IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH);
+
+    if (igraph_is_directed(graph)) {
+        IGRAPH_ERROR("Overlapping Leiden algorithm is only implemented for undirected graphs.",
+                     IGRAPH_EINVAL);
+    }
+    if (vertex_in_weights) {
+        IGRAPH_ERROR("Vertex in-weights are not supported for undirected overlapping Leiden.",
+                     IGRAPH_EINVAL);
+    }
+
+    IGRAPH_CHECK(igraph_i_community_leiden_run_overlapping(
+        graph, edge_weights, vertex_out_weights, resolution, beta,
+        max_memberships, start, n_iterations, allow_isolation,
+        local_move_only, memberships, nb_clusters, quality,
+        move_trace, projection_trace));
+
+    IGRAPH_FINALLY_CLEAN(2);
+    return IGRAPH_SUCCESS;
 }
 
 /**
@@ -2137,7 +2260,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         const igraph_bool_t *allow_isolation,
         const igraph_integer_t max_memberships,
         igraph_vector_int_list_t *memberships,
-        igraph_bool_t *changed) {
+        igraph_bool_t *changed,
+        igraph_i_leiden_overlap_trace_t *trace) {
 
     const igraph_integer_t n = igraph_vcount(graph);
     igraph_dqueue_int_t unstable_nodes;
@@ -2453,6 +2577,14 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
             }
 
             if (!same) {
+                igraph_real_t trace_quality_before = 0.0;
+
+                if (trace && trace->move_trace) {
+                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                        graph, edge_weights, node_weights, memberships,
+                        resolution_parameter, &trace_quality_before));
+                }
+
                 *changed = true;
                 accepted_move_count++;
 
@@ -2487,6 +2619,50 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                     }
                 }
                 IGRAPH_CHECK(igraph_vector_int_update(sigma, &chosen));
+
+                if (trace && trace->move_trace) {
+                    igraph_real_t trace_quality_after;
+                    const igraph_real_t predicted_delta = best_score - cur_score;
+                    igraph_real_t direct_delta, error, tolerance;
+                    igraph_real_t values[IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH];
+
+                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                        graph, edge_weights, node_weights, memberships,
+                        resolution_parameter, &trace_quality_after));
+                    direct_delta = (trace_quality_after - trace_quality_before) *
+                                   trace->original_weight;
+                    error = fabs(predicted_delta - direct_delta);
+                    tolerance = igraph_i_leiden_overlap_tolerance(
+                        predicted_delta, direct_delta);
+                    if (error > tolerance) {
+                        IGRAPH_ERRORF(
+                            "Overlapping Leiden accepted-move delta mismatch "
+                            "(predicted=%g, direct=%g, tolerance=%g).",
+                            IGRAPH_EINTERNAL, predicted_delta, direct_delta,
+                            tolerance);
+                    }
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_SEQUENCE] =
+                        trace->move_sequence;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_STAGE] = trace->stage;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_VERTEX] = v;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_BEFORE] = k;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_AFTER] = best_j;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA] =
+                        predicted_delta;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA] = direct_delta;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR] = error;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE] = tolerance;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE] =
+                        trace_quality_before;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER] =
+                        trace_quality_after;
+                    values[IGRAPH_LEIDEN_OVERLAP_MOVE_ORIGINAL_WEIGHT] =
+                        trace->original_weight;
+                    IGRAPH_CHECK(igraph_i_leiden_overlap_trace_append(
+                        trace->move_trace, values,
+                        IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH));
+                    trace->move_sequence++;
+                }
 
                 /* A changed vector can alter the best response of any
                  * neighbour; re-queue the stable ones. */
@@ -2690,9 +2866,12 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
  * token, with node weight n_v / sqrt(k_v), and one edge per (original
  * edge, token pair) combination with weight A_uv f_u f_v. With the
  * membership-vector lengths frozen, the disjoint CPM on this graph equals
- * the overlapping quality Q, which is what lets the original refinement
- * and aggregation machinery run unchanged on top of it. Self-loop skipping
- * remains defensive; the public overlapping entry point rejects looped input.
+ * the unnormalized overlapping objective. The normalized values generally
+ * differ because originalW and tokenW need not be equal; diagnostics record
+ * both denominators separately. This exact unnormalized identity is what lets
+ * the original refinement and aggregation machinery run unchanged on top of
+ * the token graph. Self-loop skipping remains defensive; the public
+ * overlapping entry point rejects looped input.
  *
  * token_graph is created here (uninitialized on entry); the remaining
  * output vectors must be initialized. */
@@ -2705,7 +2884,10 @@ static igraph_error_t igraph_i_community_leiden_overlap_tokens(
         igraph_vector_t *token_edge_weights,
         igraph_vector_t *token_node_weights,
         igraph_vector_int_t *token_membership,
-        igraph_vector_int_t *token_offset) {
+        igraph_vector_int_t *token_offset,
+        igraph_integer_t *token_count,
+        igraph_integer_t *token_edge_count,
+        igraph_real_t *token_total_weight) {
     const igraph_integer_t n = igraph_vcount(graph);
     const igraph_integer_t m = igraph_ecount(graph);
     igraph_vector_int_t token_edges;
@@ -2787,6 +2969,16 @@ static igraph_error_t igraph_i_community_leiden_overlap_tokens(
         }
     }
 
+    if (token_count) {
+        *token_count = nb_tokens;
+    }
+    if (token_edge_count) {
+        *token_edge_count = nb_token_edges;
+    }
+    if (token_total_weight) {
+        *token_total_weight = igraph_vector_sum(token_edge_weights);
+    }
+
     IGRAPH_CHECK(igraph_create(token_graph, &token_edges, nb_tokens, IGRAPH_UNDIRECTED));
 
     igraph_vector_int_destroy(&token_edges);
@@ -2804,12 +2996,16 @@ static igraph_error_t igraph_i_community_leiden_overlap_project(
         const igraph_vector_int_t *token_membership,
         const igraph_vector_int_t *token_offset,
         igraph_vector_int_list_t *memberships,
-        igraph_bool_t *deduped) {
+        igraph_bool_t *deduped,
+        igraph_integer_t *collision_count) {
     const igraph_integer_t n = igraph_vector_int_list_size(memberships);
     igraph_vector_int_t labels;
 
     IGRAPH_VECTOR_INT_INIT_FINALLY(&labels, 0);
     *deduped = false;
+    if (collision_count) {
+        *collision_count = 0;
+    }
 
     for (igraph_integer_t v = 0; v < n; v++) {
         igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
@@ -2832,6 +3028,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_project(
         }
         if (distinct < kt) {
             *deduped = true;
+            if (collision_count) {
+                *collision_count += kt - distinct;
+            }
             IGRAPH_CHECK(igraph_vector_int_resize(sigma, distinct));
         }
     }
@@ -2867,7 +3066,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
         const igraph_bool_t *allow_isolation,
         const igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships,
-        igraph_bool_t *changed) {
+        igraph_bool_t *changed,
+        igraph_i_leiden_overlap_trace_t *trace,
+        igraph_i_leiden_overlap_checkpoint_t *checkpoint) {
     igraph_inclist_t edges_per_node;
     igraph_bool_t phase_changed = false, inner_changed = false, dedup_changed = false;
     igraph_bool_t token_allow_isolation = true;
@@ -2876,16 +3077,39 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
     igraph_vector_t token_edge_weights, token_node_weights;
     igraph_vector_int_t token_membership, token_offset;
 
+    if (checkpoint) {
+        *checkpoint = (igraph_i_leiden_overlap_checkpoint_t) {
+            .token_weight = IGRAPH_NAN,
+            .quality_after_local = IGRAPH_NAN,
+            .original_unnormalized = IGRAPH_NAN,
+            .token_initial_quality = IGRAPH_NAN,
+            .token_initial_unnormalized = IGRAPH_NAN,
+            .token_identity_abs_error = IGRAPH_NAN,
+            .token_final_quality = IGRAPH_NAN,
+            .quality_projected = IGRAPH_NAN
+        };
+    }
+
     /* Phase 1: overlapping local moving. */
     IGRAPH_CHECK(igraph_inclist_init(graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
     IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_node);
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_fastmovenodes(graph, &edges_per_node,
                  edge_weights, node_weights, resolution_parameter, allow_isolation,
-                 max_memberships, memberships, &phase_changed));
+                 max_memberships, memberships, &phase_changed, trace));
     igraph_inclist_destroy(&edges_per_node);
     IGRAPH_FINALLY_CLEAN(1);
 
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, &nb_comms));
+
+    if (checkpoint) {
+        checkpoint->original_weight = igraph_vector_sum(edge_weights);
+        checkpoint->local_changed = phase_changed;
+        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+            graph, edge_weights, node_weights, memberships,
+            resolution_parameter, &checkpoint->quality_after_local));
+        checkpoint->original_unnormalized = checkpoint->quality_after_local *
+                                            checkpoint->original_weight;
+    }
 
     if (local_move_only) {
         *changed = phase_changed;
@@ -2900,8 +3124,35 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
 
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_tokens(graph, edge_weights, node_weights,
                  memberships, &token_graph, &token_edge_weights, &token_node_weights,
-                 &token_membership, &token_offset));
+                 &token_membership, &token_offset,
+                 checkpoint ? &checkpoint->token_count : NULL,
+                 checkpoint ? &checkpoint->token_edge_count : NULL,
+                 checkpoint ? &checkpoint->token_weight : NULL));
     IGRAPH_FINALLY(igraph_destroy, &token_graph);
+
+    if (checkpoint) {
+        igraph_real_t identity_tolerance;
+
+        IGRAPH_CHECK(leiden_quality(
+            &token_graph, &token_edge_weights, &token_node_weights, NULL,
+            &token_membership, nb_comms, resolution_parameter,
+            &checkpoint->token_initial_quality));
+        checkpoint->token_initial_unnormalized =
+            checkpoint->token_initial_quality * checkpoint->token_weight;
+        identity_tolerance = igraph_i_leiden_overlap_tolerance(
+            checkpoint->original_unnormalized,
+            checkpoint->token_initial_unnormalized);
+        checkpoint->token_identity_abs_error = fabs(
+            checkpoint->original_unnormalized -
+            checkpoint->token_initial_unnormalized);
+        if (checkpoint->token_identity_abs_error > identity_tolerance) {
+            IGRAPH_ERRORF(
+                "Overlapping Leiden token identity mismatch "
+                "(original=%g, token=%g, tolerance=%g).",
+                IGRAPH_EINTERNAL, checkpoint->original_unnormalized,
+                checkpoint->token_initial_unnormalized, identity_tolerance);
+        }
+    }
 
     /* The disjoint refinement/aggregation machinery always allows
      * isolation on the token graph -- it must stay free to seed new
@@ -2910,11 +3161,21 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
     IGRAPH_CHECK(community_leiden(&token_graph, &token_edge_weights,
                  &token_node_weights, NULL, resolution_parameter, beta,
                  token_allow_isolation, /* local_move_only = */ false,
-                 &token_membership, &token_nb_clusters, /* quality = */ NULL,
+                 &token_membership, &token_nb_clusters,
+                 checkpoint ? &checkpoint->token_final_quality : NULL,
                  &inner_changed));
 
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_project(&token_membership, &token_offset,
-                 memberships, &dedup_changed));
+                 memberships, &dedup_changed,
+                 checkpoint ? &checkpoint->collision_count : NULL));
+
+    if (checkpoint) {
+        checkpoint->token_changed = inner_changed;
+        checkpoint->dedup_changed = dedup_changed;
+        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+            graph, edge_weights, node_weights, memberships,
+            resolution_parameter, &checkpoint->quality_projected));
+    }
 
     igraph_destroy(&token_graph);
     igraph_vector_int_destroy(&token_offset);
@@ -3112,7 +3373,9 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         const igraph_integer_t n_iterations,
         const igraph_bool_t allow_isolation, const igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships, igraph_integer_t *nb_clusters,
-        igraph_real_t *quality) {
+        igraph_real_t *quality,
+        igraph_matrix_t *move_trace,
+        igraph_matrix_t *projection_trace) {
     const igraph_integer_t n = igraph_vcount(graph);
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -3120,6 +3383,8 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     igraph_real_t q_prev, q_cur;
     const igraph_bool_t quality_guard = !local_move_only;
     igraph_vector_int_list_t previous_memberships;
+    igraph_i_leiden_overlap_trace_t trace_context;
+    igraph_i_leiden_overlap_trace_t *trace = NULL;
 
     if (!nb_clusters) {
         nb_clusters = &i_nb_clusters;
@@ -3160,6 +3425,17 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         i_node_weights = (igraph_vector_t *) node_weights;
     }
 
+    if (move_trace || projection_trace) {
+        trace_context = (igraph_i_leiden_overlap_trace_t) {
+            .move_trace = move_trace,
+            .projection_trace = projection_trace,
+            .stage = 0,
+            .move_sequence = 0,
+            .original_weight = igraph_vector_sum(i_edge_weights)
+        };
+        trace = &trace_context;
+    }
+
     if (start) {
         /* Start from the provided cover: validate it, clean it up (sort +
          * dedup each membership vector) and compact its community IDs. */
@@ -3191,6 +3467,14 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     for (igraph_integer_t itr = 0;
          n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
+        const igraph_real_t quality_before = quality_guard ? q_prev : IGRAPH_NAN;
+        igraph_i_leiden_overlap_checkpoint_t checkpoint;
+        igraph_i_leiden_overlap_checkpoint_t *checkpoint_ptr =
+            projection_trace && !local_move_only ? &checkpoint : NULL;
+
+        if (trace) {
+            trace->stage = itr;
+        }
         if (quality_guard) {
             for (igraph_integer_t v = 0; v < n; v++) {
                 IGRAPH_CHECK(igraph_vector_int_update(
@@ -3202,10 +3486,19 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         changed = false;
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_iteration(graph, i_edge_weights,
                      i_node_weights, resolution_parameter, beta, max_memberships,
-                     &allow_isolation, local_move_only, memberships, &changed));
+                     &allow_isolation, local_move_only, memberships, &changed,
+                     trace, checkpoint_ptr));
         if (quality_guard) {
-            IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(graph, i_edge_weights,
-                         i_node_weights, memberships, resolution_parameter, &q_cur));
+            igraph_bool_t accepted = true;
+            igraph_real_t committed_quality;
+
+            if (checkpoint_ptr) {
+                q_cur = checkpoint.quality_projected;
+            } else {
+                IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                    graph, i_edge_weights, i_node_weights, memberships,
+                    resolution_parameter, &q_cur));
+            }
             if (!igraph_i_leiden_overlap_is_improvement(q_cur, q_prev)) {
                 for (igraph_integer_t v = 0; v < n; v++) {
                     IGRAPH_CHECK(igraph_vector_int_update(
@@ -3213,9 +3506,59 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
                         igraph_vector_int_list_get_ptr(&previous_memberships, v)));
                 }
                 changed = false;
+                accepted = false;
+                committed_quality = q_prev;
+            } else {
+                q_prev = q_cur;
+                committed_quality = q_cur;
+            }
+
+            if (checkpoint_ptr) {
+                igraph_real_t values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH];
+
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_ITERATION] = itr;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_WEIGHT] =
+                    checkpoint.original_weight;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_WEIGHT] =
+                    checkpoint.token_weight;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE] =
+                    quality_before;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_AFTER_LOCAL] =
+                    checkpoint.quality_after_local;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_UNNORMALIZED] =
+                    checkpoint.original_unnormalized;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_INITIAL_QUALITY] =
+                    checkpoint.token_initial_quality;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_INITIAL_UNNORMALIZED] =
+                    checkpoint.token_initial_unnormalized;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_IDENTITY_ABS_ERROR] =
+                    checkpoint.token_identity_abs_error;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_FINAL_QUALITY] =
+                    checkpoint.token_final_quality;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_COUNT] =
+                    checkpoint.token_count;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_EDGE_COUNT] =
+                    checkpoint.token_edge_count;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_COLLISION_COUNT] =
+                    checkpoint.collision_count;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_PROJECTED] =
+                    checkpoint.quality_projected;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_ACCEPTED] = accepted;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_COMMITTED] =
+                    committed_quality;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_LOCAL_CHANGED] =
+                    checkpoint.local_changed;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_CHANGED] =
+                    checkpoint.token_changed;
+                values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_DEDUP_CHANGED] =
+                    checkpoint.dedup_changed;
+                IGRAPH_CHECK(igraph_i_leiden_overlap_trace_append(
+                    projection_trace, values,
+                    IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH));
+            }
+            if (!accepted) {
                 break;
             }
-            q_prev = q_cur;
         }
     }
 
@@ -3232,14 +3575,19 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
      * tolerance-level unilateral improvement remains. */
     if (n_iterations < 0) {
         igraph_inclist_t edges_per_node;
+        igraph_integer_t certificate_sweep = 0;
         IGRAPH_CHECK(igraph_inclist_init(graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
         IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_node);
         do {
             changed = false;
+            if (trace) {
+                trace->stage = -(certificate_sweep + 1);
+            }
             IGRAPH_CHECK(igraph_i_community_leiden_overlap_fastmovenodes(
                 graph, &edges_per_node, i_edge_weights, i_node_weights,
                 resolution_parameter, &allow_isolation, max_memberships,
-                memberships, &changed));
+                memberships, &changed, trace));
+            certificate_sweep++;
         } while (changed);
         igraph_inclist_destroy(&edges_per_node);
         IGRAPH_FINALLY_CLEAN(1);
