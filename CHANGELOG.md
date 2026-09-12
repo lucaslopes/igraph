@@ -178,8 +178,16 @@ This section lists API-breaking changes in this version, and provides guidance o
 - `igraph_beta_weighted_gabriel_graph()` computes a Gabriel graph of a spatial point set, along with a threshold β value for each edge, at which the edge ceases to be part of the lune-based β-skeleton (experimental function). Thanks to Arnór Friðriksson @Zepeacedust for implementing this in #2827!
 - `igraph_spatial_edge_lengths()` computes edge lengths based on spatial vertex coordinates (experimental function).
 - `igraph_community_leiden_simple()` is a simplified interface to `igraph_community_leiden()` that allows selecting the objective function to maximize directly.
+- `igraph_community_leiden()` is the single public Leiden entry point for both disjoint and overlapping clustering. Mode is selected by `max_memberships`: `1` runs the classical disjoint algorithm into a membership vector; values greater than 1 run overlapping Leiden-CPM into a memberships list.
+- `igraph_community_leiden_with_diagnostics()` is an opt-in, bounded-validation interface for overlapping Leiden that records accepted-move delta checks and token-projection normalization, collision, and guard traces.
 - `igraph_vector_difference_and_intersection_sorted()` calculates the intersection and the differences of two vectors simultaneously.
 - `IGRAPH_UNLIMITED`, defined to `-1`, is a convenience constant for use with various "size limit" parameters, such as number of cliques returned, maximum path length, number of results returned, etc. It indicates that no limit should be used.
+- The following functions are not experimental any more: `igraph_count_loops()`, `igraph_count_reachable()`, `igraph_degree_correlation_vector`, `igraph_distances_cutoff()`, `igraph_distances_floyd_warshall()`, `igraph_distances_dijkstra_cutoff()`, `igraph_ecc()`, `igraph_enter_safelocale()`, `igraph_exit_safelocale()`, `igraph_feedback_vertex_set()`, `igraph_find_cycle()`, `igraph_get_shortest_path_astar()`, `igraph_graph_power()`,  `igraph_hexagonal_lattice()`,  `igraph_hypercube()`, `igraph_is_bipartite_coloring()`, `igraph_is_clique()`, `igraph_is_complete()`, `igraph_is_edge_coloring()`, `igraph_is_vertex_coloring()`,  `igraph_is_independent_vertex_set()`, `igraph_join()`,`igraph_joint_degree_distribution()`, `igraph_joint_degree_matrix()`, `igraph_joint_type_distribution()`, `igraph_layout_align()`, `igraph_layout_merge_dla()`, `igraph_mean_degree()`, `igraph_radius()`, `igraph_realize_bipartite_degree_sequence()`, `igraph_reachability()`, `igraph_transitive_closure()`, `igraph_tree_from_parent_vector()`, `igraph_triangular_lattice()`, `igraph_vector_intersection_size_sorted()`, `igraph_voronoi()`.
+ - `igraph_layout_align()` attempts to align a graph layout with the coordinate axes in a visually pleasing manner (experimental function).
+ - `igraph_product()` supports the lexicographic and strong graph products. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2772!
+ - `igraph_mycielskian()` and `igraph_mycielski_graph()` compute a Mycielski transformation of a graph, and a Mycielski graph, respectively. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2741!
+ - `igraph_path_graph()` is a convenience wrapper for `igraph_ring()` with `circular=false`.
+ - `igraph_cycle_graph()` is a convenience wrapper for `igraph_ring()` with `circular=true`.
 
 ### Changed
 
@@ -195,10 +203,6 @@ This section lists API-breaking changes in this version, and provides guidance o
 - `igraph_vector_append()`, `igraph_strvector_append()` and `igraph_vector_ptr_append()` now use a different allocation strategy: if the `to` vector has insufficient capacity, they double its capacity. Previously they reserved precisely as much capacity as needed for appending the `from` vector.
 - The implementation of the Infomap algorithm behind `igraph_community_infomap()` has been updated with a more recent version (2.8.0). Isolated vertices are now supported.
 - `igraph_vector_difference_sorted()` now handles multisets properly (and documents how the multiplicities are handled).
-
-### Finalized experimental functions
-
-- The following functions are not experimental any more: `igraph_count_loops()`, `igraph_count_reachable()`, `igraph_degree_correlation_vector`, `igraph_distances_cutoff()`, `igraph_distances_floyd_warshall()`, `igraph_distances_dijkstra_cutoff()`, `igraph_ecc()`, `igraph_enter_safelocale()`, `igraph_exit_safelocale()`, `igraph_feedback_vertex_set()`, `igraph_find_cycle()`, `igraph_get_shortest_path_astar()`, `igraph_graph_power()`,  `igraph_hexagonal_lattice()`,  `igraph_hypercube()`, `igraph_is_bipartite_coloring()`, `igraph_is_clique()`, `igraph_is_complete()`, `igraph_is_edge_coloring()`, `igraph_is_vertex_coloring()`,  `igraph_is_independent_vertex_set()`, `igraph_join()`,`igraph_joint_degree_distribution()`, `igraph_joint_degree_matrix()`, `igraph_joint_type_distribution()`, `igraph_layout_align()`, `igraph_layout_merge_dla()`, `igraph_mean_degree()`, `igraph_radius()`, `igraph_realize_bipartite_degree_sequence()`, `igraph_reachability()`, `igraph_transitive_closure()`, `igraph_tree_from_parent_vector()`, `igraph_triangular_lattice()`, `igraph_vector_intersection_size_sorted()`, `igraph_voronoi()`.
 
 ### Fixed
 
