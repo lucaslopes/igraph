@@ -1027,6 +1027,7 @@ static void test_overlapping_diagnostic_trace(void) {
     igraph_matrix_t failed_move_trace, failed_projection_trace;
     igraph_integer_t nb_clusters;
     igraph_real_t quality;
+    igraph_bool_t saw_collision = false, saw_accept = false, saw_restore = false;
 
     IGRAPH_ASSERT(igraph_small(
         &graph, 11, IGRAPH_UNDIRECTED,
@@ -1076,6 +1077,12 @@ static void test_overlapping_diagnostic_trace(void) {
             accepted ? IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_PROJECTED :
                        IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE);
 
+        saw_collision = saw_collision || MATRIX(
+            projection_trace, row,
+            IGRAPH_LEIDEN_OVERLAP_PROJECTION_COLLISION_COUNT) > 0.0;
+        saw_accept = saw_accept || accepted;
+        saw_restore = saw_restore || !accepted;
+
         IGRAPH_ASSERT(MATRIX(projection_trace, row,
                              IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_WEIGHT) > 0.0);
         IGRAPH_ASSERT(MATRIX(projection_trace, row,
@@ -1096,6 +1103,9 @@ static void test_overlapping_diagnostic_trace(void) {
                       MATRIX(projection_trace, row,
                              IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE));
     }
+    IGRAPH_ASSERT(saw_collision);
+    IGRAPH_ASSERT(saw_accept);
+    IGRAPH_ASSERT(saw_restore);
 
     assert_overlapping_cover_valid(&memberships, 11, 3);
     IGRAPH_ASSERT(isfinite(quality));
