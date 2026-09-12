@@ -827,6 +827,274 @@ static void test_nash_overlapping_parameter_matrix(void) {
     printf("Nash overlapping allow_isolation x local_move_only matrix: OK\n\n");
 }
 
+static void test_overlapping_input_contract(void) {
+    igraph_t graph, invalid_graph;
+    igraph_vector_t edge_weights, node_weights;
+    igraph_vector_int_list_t memberships;
+    igraph_integer_t nb_clusters;
+    igraph_real_t quality;
+
+    IGRAPH_ASSERT(igraph_small(&graph, 2, IGRAPH_UNDIRECTED, 0, 1, -1) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_init(&edge_weights, 1) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_init(&node_weights, 2) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 0) == IGRAPH_SUCCESS);
+    igraph_vector_fill(&edge_weights, 1.0);
+    igraph_vector_fill(&node_weights, 1.0);
+
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, IGRAPH_NAN, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, IGRAPH_INFINITY, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, DBL_MAX, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EOVERFLOW);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, IGRAPH_NAN,
+        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, IGRAPH_INFINITY,
+        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, -0.01,
+        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+
+    VECTOR(edge_weights)[0] = IGRAPH_NAN;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(edge_weights)[0] = IGRAPH_INFINITY;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(edge_weights)[0] = -1.0;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(edge_weights)[0] = 0.0;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(edge_weights)[0] = DBL_MAX;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EOVERFLOW);
+    VECTOR(edge_weights)[0] = 1.0;
+
+    VECTOR(node_weights)[0] = IGRAPH_NAN;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(node_weights)[0] = IGRAPH_INFINITY;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(node_weights)[0] = -1.0;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    VECTOR(node_weights)[0] = DBL_MAX;
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EOVERFLOW);
+    igraph_vector_fill(&node_weights, 1.0);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, &node_weights, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+
+    /* Zero node weights and finite negative resolutions are in-domain. */
+    igraph_vector_fill(&node_weights, 0.0);
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, -0.1, 0.0,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality)
+        == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(isfinite(quality));
+    igraph_vector_fill(&node_weights, 1.0);
+
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        3, false, 1, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    CHECK_ERROR(igraph_community_leiden(
+        &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
+        IGRAPH_INTEGER_MAX, false, 1, true, true,
+        NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+
+    IGRAPH_ASSERT(igraph_small(
+        &invalid_graph, 2, IGRAPH_UNDIRECTED, 0, 0, 0, 1, -1) == IGRAPH_SUCCESS);
+    CHECK_ERROR(igraph_community_leiden(
+        &invalid_graph, NULL, NULL, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    igraph_destroy(&invalid_graph);
+
+    IGRAPH_ASSERT(igraph_empty(&invalid_graph, 2, IGRAPH_UNDIRECTED) == IGRAPH_SUCCESS);
+    CHECK_ERROR(igraph_community_leiden(
+        &invalid_graph, NULL, NULL, NULL, 0.1, 0.01,
+        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        IGRAPH_EINVAL);
+    igraph_destroy(&invalid_graph);
+
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_vector_destroy(&node_weights);
+    igraph_vector_destroy(&edge_weights);
+    igraph_destroy(&graph);
+
+    VERIFY_FINALLY_STACK();
+    printf("Overlapping numeric/input contract: OK\n\n");
+}
+
+static void test_positive_budget_original_quality_guard(void) {
+    igraph_t graph;
+    igraph_vector_t edge_weights;
+    igraph_vector_int_list_t memberships, snapshot;
+    igraph_integer_t nb_clusters;
+    igraph_real_t quality_before, quality_after;
+    static const igraph_real_t weights[] = {0.25, 2.0, 0.1, 1.0, 1.0};
+    static const igraph_int_t offsets[] = {0, 2, 3, 6, 9};
+    static const igraph_int_t labels[] = {1, 2, 0, 0, 1, 2, 0, 1, 2};
+
+    IGRAPH_ASSERT(igraph_small(
+        &graph, 4, IGRAPH_UNDIRECTED,
+        0, 1, 0, 2, 0, 3, 1, 2, 2, 3, -1) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_init(&edge_weights, 5) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 4) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&snapshot, 4) == IGRAPH_SUCCESS);
+    for (igraph_integer_t e = 0; e < 5; e++) {
+        VECTOR(edge_weights)[e] = weights[e];
+    }
+    for (igraph_integer_t v = 0; v < 4; v++) {
+        igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(&memberships, v);
+        IGRAPH_ASSERT(igraph_vector_int_resize(sigma, offsets[v + 1] - offsets[v])
+                      == IGRAPH_SUCCESS);
+        for (igraph_integer_t i = offsets[v]; i < offsets[v + 1]; i++) {
+            VECTOR(*sigma)[i - offsets[v]] = labels[i];
+        }
+    }
+
+    /* Zero iterations establishes the exact phase-entry state and quality. */
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
+        3, true, 0, false, false,
+        NULL, &memberships, &nb_clusters, &quality_before) == IGRAPH_SUCCESS);
+    for (igraph_integer_t v = 0; v < 4; v++) {
+        IGRAPH_ASSERT(igraph_vector_int_update(
+            igraph_vector_int_list_get_ptr(&snapshot, v),
+            igraph_vector_int_list_get_ptr(&memberships, v)) == IGRAPH_SUCCESS);
+    }
+
+    /* This fixed seed made the unguarded 1.0.0.3 path decrease the original
+     * unnormalized potential from 0.39814623902049906 to 0.35. */
+    IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 1452719858) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
+        3, true, 1, false, false,
+        NULL, &memberships, &nb_clusters, &quality_after) == IGRAPH_SUCCESS);
+    assert_overlapping_covers_equal(&memberships, &snapshot);
+    IGRAPH_ASSERT(igraph_almost_equals(quality_after, quality_before, 1e-12));
+
+    igraph_vector_int_list_destroy(&snapshot);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_vector_destroy(&edge_weights);
+    igraph_destroy(&graph);
+
+    VERIFY_FINALLY_STACK();
+    printf("Positive-budget original-quality guard: OK\n\n");
+}
+
+static igraph_integer_t interruption_poll_count;
+static igraph_integer_t interrupt_after_poll;
+
+static igraph_bool_t interrupt_on_selected_poll(void) {
+    interruption_poll_count++;
+    return interruption_poll_count >= interrupt_after_poll;
+}
+
+static void test_overlapping_interrupt_unwind(void) {
+    igraph_t graph;
+    igraph_vector_int_list_t memberships;
+    igraph_error_handler_t *old_error_handler;
+    igraph_interruption_handler_t *old_interruption_handler;
+
+    old_error_handler = igraph_set_error_handler(igraph_error_handler_ignore);
+    old_interruption_handler = igraph_set_interruption_handler(NULL);
+
+    /* Immediate interruption while the original incidence list is built. */
+    IGRAPH_ASSERT(igraph_ring(&graph, 1000, IGRAPH_UNDIRECTED, false, true) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 0) == IGRAPH_SUCCESS);
+    interruption_poll_count = 0;
+    interrupt_after_poll = 1;
+    igraph_set_interruption_handler(interrupt_on_selected_poll);
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, NULL, NULL, NULL, 0.1, 0.01,
+        2, false, -1, true, true, NULL, &memberships, NULL, NULL)
+        == IGRAPH_INTERRUPTED);
+    igraph_set_interruption_handler(NULL);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_destroy(&graph);
+    VERIFY_FINALLY_STACK();
+
+    /* Nine incidence-list polls, then one local-mover poll at 8192 pops. */
+    IGRAPH_ASSERT(igraph_ring(&graph, 9000, IGRAPH_UNDIRECTED, false, true) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 0) == IGRAPH_SUCCESS);
+    interruption_poll_count = 0;
+    interrupt_after_poll = 10;
+    igraph_set_interruption_handler(interrupt_on_selected_poll);
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, NULL, NULL, NULL, 0.1, 0.01,
+        2, false, -1, true, true, NULL, &memberships, NULL, NULL)
+        == IGRAPH_INTERRUPTED);
+    igraph_set_interruption_handler(NULL);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_destroy(&graph);
+    VERIFY_FINALLY_STACK();
+
+    /* A small dense graph avoids earlier polls but materializes more than
+     * 8192 token edges, so interruption occurs inside token construction. */
+    IGRAPH_ASSERT(igraph_full(&graph, 100, IGRAPH_UNDIRECTED, IGRAPH_NO_LOOPS)
+                  == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 100) == IGRAPH_SUCCESS);
+    for (igraph_integer_t v = 0; v < 100; v++) {
+        igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(&memberships, v);
+        IGRAPH_ASSERT(igraph_vector_int_resize(sigma, 2) == IGRAPH_SUCCESS);
+        VECTOR(*sigma)[0] = 0;
+        VECTOR(*sigma)[1] = 1;
+    }
+    interruption_poll_count = 0;
+    interrupt_after_poll = 1;
+    igraph_set_interruption_handler(interrupt_on_selected_poll);
+    IGRAPH_ASSERT(igraph_community_leiden(
+        &graph, NULL, NULL, NULL, 0.0, 0.01,
+        2, true, 1, true, false, NULL, &memberships, NULL, NULL)
+        == IGRAPH_INTERRUPTED);
+    igraph_set_interruption_handler(NULL);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_destroy(&graph);
+    VERIFY_FINALLY_STACK();
+
+    igraph_set_interruption_handler(old_interruption_handler);
+    igraph_set_error_handler(old_error_handler);
+    printf("Overlapping interrupt unwind: OK\n\n");
+}
+
 int main(void) {
     igraph_t graph;
     igraph_vector_t weights;
@@ -1009,6 +1277,9 @@ int main(void) {
     test_nash_disjoint_parameter_matrix();
     test_nash_omitted_smaller_target();
     test_nash_overlapping_parameter_matrix();
+    test_overlapping_input_contract();
+    test_positive_budget_original_quality_guard();
+    test_overlapping_interrupt_unwind();
 
     /* Overlapping Leiden via the unified public API. Each call reseeds the
      * RNG so that these tests are self-contained and do not perturb the

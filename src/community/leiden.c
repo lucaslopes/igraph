@@ -31,6 +31,7 @@
 #include "igraph_vector_list.h"
 
 #include "core/interruption.h"
+#include "math/safe_intop.h"
 
 #include <float.h>
 #include <math.h>
@@ -1355,44 +1356,48 @@ static igraph_error_t community_leiden(
  * detection as a hedonic game.
  * Physica A: Statistical Mechanics and its Applications, 680, 130989 (2025).
  * https://doi.org/10.1016/j.physa.2025.130989
- * When \p n_iterations is negative, the returned partition or cover is a
- * hedonic Nash equilibrium at the given resolution (Definition 3 /
- * Proposition 1 therein): every vertex's assignment is a best response
- * over all eligible communities, not only neighboring ones.
+ * When \p n_iterations is negative, the implementation finishes with a
+ * complete candidate-prefix sweep on the original graph. For overlapping
+ * covers this is a floating-point, tolerance-level algorithmic certificate,
+ * not an exact-arithmetic proof supplied by the library.
  *
  * \param graph The input graph.
  * \param edge_weights Numeric vector containing edge weights. If \c NULL,
- *    every edge has equal weight of 1. The weights need not be non-negative.
+ *    every edge has equal weight of 1. The disjoint path retains its
+ *    historical signed-weight contract. The overlapping path requires finite,
+ *    non-negative weights with positive finite total weight.
  * \param vertex_out_weights Numeric vector containing vertex weights, or vertex
  *    out-weights for directed graphs. If \c NULL, every vertex has equal
- *    weight of 1.
+ *    weight of 1. Overlapping node weights must be finite and non-negative.
  * \param vertex_in_weights Numeric vector containing vertex in-weights for
  *    directed graphs. If set to \c NULL, in-weights are assumed to be the same
  *    as out-weights, which effectively ignores edge directions.
  *    Must be \c NULL for undirected graphs.
  * \param max_memberships The maximum number of communities to which a vertex
  *    may belong. If this is 1, the classical disjoint Leiden algorithm is
- *    used. Values greater than 1 enable overlapping community detection and
- *    require the \p memberships output.
+ *    used. Values greater than 1 enable overlapping community detection,
+ *    require the \p memberships output, and must not exceed the vertex count.
  * \param start If true, start from the supplied \p membership or
  *    \p memberships instead of from a singleton partition or cover.
  * \param n_iterations Iterate the core Leiden algorithm the indicated number
  *    of times. If this is a negative number, iteration continues until a
  *    local-moving certificate sweep finds no strict (disjoint) or
- *    tolerance-level (overlapping) unilateral improvement: the returned
- *    partition or cover is a hedonic Nash equilibrium at the given
- *    resolution (every vertex's assignment is a best response over all
- *    eligible communities). Two iterations are often sufficient for
- *    ordinary use, thus 2 is a reasonable default.
+ *    tolerance-level (overlapping) unilateral improvement. Positive budgets
+ *    may stop before this sweep. Every overlapping multilevel iteration is
+ *    nevertheless checkpointed and is retained only if the projected cover
+ *    improves original-space quality beyond the numerical margin. Two
+ *    iterations are often sufficient for ordinary use, thus 2 is a
+ *    reasonable default.
  * \param beta The randomness used in the refinement step when merging. A small
- *    amount of randomness (\c beta = 0.01) typically works well.
+ *    amount of randomness (\c beta = 0.01) typically works well. The
+ *    overlapping path requires a finite, non-negative value.
  * \param allow_isolation Whether the local-moving phase may create a new
  *    isolated community or cover membership. When false, the local mover
  *    instead considers one extreme-mass omitted existing community so that
  *    a completed sweep is a hedonic best response over all active communities.
  * \param local_move_only If true, run only the local-moving phase. If false,
- *    also run refinement and aggregation; in overlapping mode, a negative
- *    \p n_iterations value keeps only tolerance-level quality improvements.
+ *    also run refinement and aggregation. In overlapping mode, every
+ *    multilevel proposal is guarded in original-graph quality units.
  * \param membership The disjoint membership vector. It is used as the initial
  *    partition when \p start is true and is updated in place. It may be NULL
  *    when using the overlapping interface.
@@ -1403,11 +1408,16 @@ static igraph_error_t community_leiden(
  * \param nb_clusters The number of clusters contained in the final \p membership
  *    or \p memberships. If \c NULL, the number of clusters will not be returned.
  * \param quality The quality of the partition, in terms of the objective
- *    function as included in the documentation. If \c NULL the quality will
- *    not be calculated.
+ *    function as included in the documentation. Overlapping quality is the
+ *    original-graph unit-l2 CPM potential divided by original total edge
+ *    weight; zero-total-weight inputs are rejected. If \c NULL the quality
+ *    will not be calculated.
  * \return Error code.
  *
- * Time complexity: near linear on sparse graphs.
+ * The classical disjoint implementation is near linear on sparse graphs in
+ * typical use. Overlapping local moving additionally depends on membership
+ * incidences and candidate sorting. Multilevel overlapping mode materializes
+ * up to sum_(uv in E) k_u k_v token edges and preflights this expansion.
  *
  * \sa \ref igraph_community_leiden_simple() for a simplified interface
  * that allows specifying an objective function directly and does not require
@@ -1591,6 +1601,10 @@ igraph_error_t igraph_community_leiden(
         /* Overlapping path: max_memberships > 1. Undirected only. */
         if (directed) {
             IGRAPH_ERROR("Overlapping Leiden algorithm is only implemented for undirected graphs.", IGRAPH_EINVAL);
+        }
+        if (vertex_in_weights) {
+            IGRAPH_ERROR("Vertex in-weights are not supported for undirected overlapping Leiden.",
+                         IGRAPH_EINVAL);
         }
         IGRAPH_UNUSED(membership);
         return igraph_i_community_leiden_run_overlapping(
@@ -1836,14 +1850,16 @@ igraph_error_t igraph_community_leiden_simple(
  * to overlapping covers, following the exact-potential-game formulation of
  * the CPM in Felipe, Avrachenkov & Menasché, Physica A 680:130989 (2025)
  * ("From Leiden to Pleasure Island"; DOI 10.1016/j.physa.2025.130989).
- * Each node v now holds a *membership vector* (a set of community IDs), and
- * the local moving phase evaluates three unilateral action types: ADD a
- * community to the vector, REMOVE one from it, or SUBSTITUTE one for another.
+ * Each node v now holds a *membership vector* (a set of community IDs). The
+ * local moving phase evaluates a complete bounded row replacement by sorting
+ * frozen per-community gains and comparing every prefix. ADD, REMOVE, and
+ * SUBSTITUTE are only a mnemonic reading of the resulting row change; their
+ * primitive exhaustion alone would be a weaker guarantee.
  *
  * --- The quality function (mitigation of edge double-counting) ---
  *
  * Node v with k_v = |sigma_v| memberships participates in community c with
- * fractional intensity f_v^c = 1 / sqrt(k_v). The global quality is
+ * fractional intensity f_v^c = 1 / sqrt(k_v). The unnormalized potential is
  *
  *   Q(pi) = sum_c [ E_c - (gamma/2) S_c^2 ],
  *     E_c = sum_{i<j} A_ij f_i^c f_j^c,   S_c = sum_i n_i f_i^c.
@@ -1853,8 +1869,7 @@ igraph_error_t igraph_community_leiden_simple(
  *   kappa_ij = |sigma_i INTERSECT sigma_j| / sqrt(k_i k_j)  <=  1
  *
  * by Cauchy-Schwarz, with equality iff sigma_i == sigma_j. Hence a pair of
- * nodes can never contribute more than the original CPM pair value
- * (A_ij - gamma n_i n_j): edges are *never* double-counted, and on a
+ * nodes can never amplify an edge-support coefficient beyond one, and on a
  * disjoint cover (all k = 1) Q reduces exactly to the CPM quality
  * optimized by igraph_community_leiden() above (S_c^2 mirrors the N_c^2
  * convention used there, so self-pair terms cancel identically in all
@@ -1884,35 +1899,29 @@ igraph_error_t igraph_community_leiden_simple(
  *
  *   U_v(sigma) = ( sum_{c in sigma} g_c(v) ) / sqrt(|sigma|),
  *
- * and Delta U = Delta Q holds *identically* for every unilateral ADD,
- * REMOVE or SUBSTITUTE: Phi(pi) = Q(pi) is an exact potential in exact
- * arithmetic. In the implementation, improvements below the scale-aware
+ * and Delta U = Delta Q holds *identically* for every complete unilateral
+ * row replacement: the unnormalized Q is an exact potential in exact
+ * arithmetic. The reported quality divides Q by original total edge weight,
+ * a positive rescaling. In the implementation, improvements below the scale-aware
  * convergence margin are treated as ties; the deterministic progress guard
  * remains as a last-resort error path if unexpected queue churn persists.
- * With a rational resolution gamma = b/c^ and the finite value set
- * {1/sqrt(j) : j <= K}, per-move gains live in a finite lattice bounded
- * away from zero, giving the pseudo-polynomial convergence of Theorem 1
- * scaled by K^2 (K = max_memberships). All comparisons are linear in
- * gamma, so the interval-stability machinery of Theorems 4 and 5 lifts
- * verbatim: a membership vector that is a best response at gamma_0 and at
- * gamma_1 is a best response on all of [gamma_0, gamma_1], and the
- * generalized familiarity threshold of an action with edge-gain Delta L
- * and mass-gain Delta W is gamma* = Delta L / (n_v Delta W): the
- * resolution at which that branch of the decision tree flips from a clear
- * choice to a frustrated one.
+ * A fixed finite label universe and cap imply finite termination for exact
+ * strict-improvement dynamics, but the disjoint integer-lattice running-time
+ * proof does not transfer: changed cardinalities introduce radical
+ * coefficients. For a fixed profile and action universe, each deviation gain
+ * is affine in gamma, so endpoint best-response checks certify the full
+ * intervening resolution interval.
  *
- * --- Membership proliferation (mitigation of explosion) ---
+ * --- Membership cardinality ---
  *
- * Three coupled brakes prevent membership explosion:
- *  1. Dilution: adding community c rescales *all* of v's intensities from
+ * Adding community c rescales *all* of v's intensities from
  *     1/sqrt(k) to 1/sqrt(k+1), so entry is profitable only if
  *     g_c > (sqrt((k+1)/k) - 1) * sum of current g values -- a hurdle that
  *     grows with the quality of the portfolio already held.
- *  2. Density: g_c itself charges gamma n_v W_v^c against *the entire
- *     fractional mass* of the candidate community; sparse or ill-fitting
- *     communities have negative g and are never entered.
- *  3. A hard cap K = max_memberships bounds the vector length and the
- *     convergence constant.
+ * This condition explains one entry decision, not a universal sparsity
+ * theorem: equal positive gains can make every entry attractive, and
+ * saturated duplicate-label equilibria exist. The hard cap K is the only
+ * general incidence bound enforced by this implementation.
  *
  * --- The three-branch decision tree ---
  *
@@ -1933,19 +1942,23 @@ igraph_error_t igraph_community_leiden_simple(
  * After the overlapping local-moving phase converges, each (node,
  * community) pair becomes a *token* with node weight n_v / sqrt(k_v), and
  * each edge (u, v) of the original graph induces token edges with weight
- * A_uv f_u f_v. With the k's frozen, Q restricted to token relabelings is
- * *exactly* the disjoint CPM on this token graph, so the original
- * refinement (igraph_i_community_leiden_mergenodes) and aggregation
+ * A_uv f_u f_v. With the k's frozen, collision-free token partitions have
+ * exactly the same *unnormalized* objective as the projected original cover.
+ * Token and original total edge weights generally differ, so separately
+ * normalized quality values are not interchangeable. This identity lets the
+ * original refinement (igraph_i_community_leiden_mergenodes) and aggregation
  * (igraph_i_community_leiden_aggregate) machinery -- and the entire
  * multi-level loop -- are reused unchanged on tokens. Meta-nodes inherit
  * membership-vector slices as groups of tokens and move as units, which
- * keeps Delta Phi exact at every aggregation level. The one relaxation:
+ * keeps the frozen-token objective exact at every aggregation level. The one relaxation:
  * higher-level merges may land two tokens of the same node in the same
  * community; such duplicates are collapsed when projecting back
- * (multiset -> set), the node is re-examined by the next overlapping
- * phase, and the outer driver only continues while the overlapping
- * quality Q improves beyond the numerical convergence margin, so a rejected
- * full-mode iteration is rolled back before the wrapper stops.
+ * (multiset -> set), and the node is re-examined by the next overlapping
+ * phase. Every full-mode iteration checkpoints its phase-entry cover,
+ * recomputes the projected cover in original-graph units, and restores the
+ * checkpoint unless quality improves beyond the numerical convergence
+ * margin. Negative iteration counts additionally request final complete
+ * original-space response sweeps.
  */
 
 typedef struct {
@@ -1988,7 +2001,7 @@ static igraph_error_t igraph_i_leiden_overlap_ensure_cap(
     if (needed <= *cap) {
         return IGRAPH_SUCCESS;
     }
-    newcap = 2 * (*cap);
+    newcap = *cap > IGRAPH_INTEGER_MAX / 2 ? IGRAPH_INTEGER_MAX : 2 * (*cap);
     if (newcap < needed) {
         newcap = needed;
     }
@@ -2139,6 +2152,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     igraph_vector_int_t chosen;
     igraph_i_leiden_overlap_cand_t *cand;
     igraph_integer_t cap = 1, nb_comm_ids = 0, maxdeg = 0, cand_cap;
+    igraph_integer_t label_bound, label_storage_bound;
+    igraph_integer_t neighbour_cand_bound, active_cand_bound;
     const igraph_integer_t reconcile_period = 1024;
     const igraph_integer_t progress_ceiling =
         igraph_i_leiden_overlap_progress_ceiling(n, max_memberships);
@@ -2159,13 +2174,19 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
             maxdeg = degree;
         }
         for (igraph_integer_t idx = 0; idx < k; idx++) {
-            if (VECTOR(*sigma)[idx] + 1 > nb_comm_ids) {
-                nb_comm_ids = VECTOR(*sigma)[idx] + 1;
+            igraph_integer_t candidate_id_count;
+            IGRAPH_SAFE_ADD(VECTOR(*sigma)[idx], 1, &candidate_id_count);
+            if (candidate_id_count > nb_comm_ids) {
+                nb_comm_ids = candidate_id_count;
             }
         }
     }
-    if (nb_comm_ids + 1 > cap) {
-        cap = nb_comm_ids + 1;
+    IGRAPH_SAFE_MULT(n, max_memberships, &label_bound);
+    IGRAPH_SAFE_ADD(label_bound, 1, &label_storage_bound);
+    IGRAPH_SAFE_ADD(nb_comm_ids, 1, &cap);
+    if (cap > label_storage_bound) {
+        IGRAPH_ERROR("Overlapping Leiden community identifier bound exceeded.",
+                     IGRAPH_EOVERFLOW);
     }
 
     IGRAPH_VECTOR_INIT_FINALLY(&comm_mass, cap);
@@ -2173,7 +2194,11 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     IGRAPH_VECTOR_INIT_FINALLY(&edge_w_to_comm, cap);
     IGRAPH_VECTOR_INT_INIT_FINALLY(&comm_seen, cap);
 
-    IGRAPH_VECTOR_INIT_FINALLY(&inv_sqrt, max_memberships + 1);
+    {
+        igraph_integer_t inv_sqrt_size;
+        IGRAPH_SAFE_ADD(max_memberships, 1, &inv_sqrt_size);
+        IGRAPH_VECTOR_INIT_FINALLY(&inv_sqrt, inv_sqrt_size);
+    }
     for (igraph_integer_t j = 1; j <= max_memberships; j++) {
         VECTOR(inv_sqrt)[j] = 1.0 / sqrt((igraph_real_t) j);
     }
@@ -2198,11 +2223,14 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
     /* Candidates per visit: own memberships, neighbour communities, and either
      * one empty community or omitted existing communities (all of them when
-     * resolution * n_v < 0). Community IDs stay within [0, n]. */
-    cand_cap = n + max_memberships + 1;
-    if (cand_cap < maxdeg * max_memberships + max_memberships + 1) {
-        cand_cap = maxdeg * max_memberships + max_memberships + 1;
-    }
+     * resolution * n_v < 0). Anonymous community IDs are bounded by the
+     * maximum possible incidence count n * max_memberships. */
+    active_cand_bound = label_storage_bound;
+    IGRAPH_SAFE_MULT(maxdeg, max_memberships, &neighbour_cand_bound);
+    IGRAPH_SAFE_ADD(neighbour_cand_bound, max_memberships, &neighbour_cand_bound);
+    IGRAPH_SAFE_ADD(neighbour_cand_bound, 1, &neighbour_cand_bound);
+    cand_cap = active_cand_bound > neighbour_cand_bound
+        ? active_cand_bound : neighbour_cand_bound;
     cand = IGRAPH_CALLOC(cand_cap, igraph_i_leiden_overlap_cand_t);
     IGRAPH_CHECK_OOM(cand, "Insufficient memory for overlapping Leiden.");
     IGRAPH_FINALLY(igraph_free, cand);
@@ -2250,7 +2278,13 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
          * real community ID ever takes, when allow_isolation is false. */
         if (*allow_isolation) {
             if (igraph_stack_int_empty(&empty_comms)) {
-                IGRAPH_CHECK(igraph_i_leiden_overlap_ensure_cap(nb_comm_ids + 1, &cap,
+                igraph_integer_t needed;
+                IGRAPH_SAFE_ADD(nb_comm_ids, 1, &needed);
+                if (needed > label_bound) {
+                    IGRAPH_ERROR("Overlapping Leiden exhausted its finite label bound.",
+                                 IGRAPH_EOVERFLOW);
+                }
+                IGRAPH_CHECK(igraph_i_leiden_overlap_ensure_cap(needed, &cap,
                              &comm_mass, &comm_tokens, &edge_w_to_comm, &comm_seen));
                 IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, nb_comm_ids));
                 nb_comm_ids++;
@@ -2478,7 +2512,15 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
         IGRAPH_BIT_SET(node_is_stable, v);
 
-        IGRAPH_ALLOW_INTERRUPTION_LIMITED(iter, 1 << 13);
+        if (++iter >= (1 << 13)) {
+            /* Propagate through IGRAPH_ERROR while this frame and all eleven
+             * registered temporaries are still alive. The generic limited
+             * macro returns directly and would leave stale FINALLY entries. */
+            if (igraph_allow_interruption()) {
+                IGRAPH_ERROR("Interrupted.", IGRAPH_INTERRUPTED);
+            }
+            iter = 0;
+        }
     }
 
 #ifndef NDEBUG
@@ -2511,6 +2553,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_compact(
         igraph_integer_t *nb_clusters) {
     const igraph_integer_t n = igraph_vector_int_list_size(memberships);
     igraph_integer_t maxid = -1, next = 0;
+    igraph_integer_t id_count;
     igraph_vector_int_t new_id;
 
     for (igraph_integer_t v = 0; v < n; v++) {
@@ -2523,7 +2566,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_compact(
         }
     }
 
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&new_id, maxid + 1);
+    IGRAPH_SAFE_ADD(maxid, 1, &id_count);
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&new_id, id_count);
     igraph_vector_int_fill(&new_id, -1);
 
     for (igraph_integer_t v = 0; v < n; v++) {
@@ -2553,9 +2597,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_compact(
  *   Q = (1/2m) sum_c ( 2 E_c - gamma S_c^2 )
  *
  * with E_c and S_c as in the section comment. Reduces exactly to the
- * quality of igraph_i_community_leiden_quality on disjoint covers.
- * Self-loops contribute their full weight independently of the membership
- * vectors (sum_c (f_v^c)^2 = 1), mirroring their neutral role above. */
+ * quality of igraph_i_community_leiden_quality on disjoint covers. The public
+ * overlapping entry point rejects self-loops so this calculation has one
+ * declared graph convention. */
 static igraph_error_t igraph_i_community_leiden_overlap_quality(
         const igraph_t *graph,
         const igraph_vector_t *edge_weights,
@@ -2567,7 +2611,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
     const igraph_integer_t m = igraph_ecount(graph);
     igraph_real_t total_edge_weight = 0.0, q = 0.0;
     igraph_vector_t comm_mass;
-    igraph_integer_t maxid = -1;
+    igraph_integer_t maxid = -1, id_count;
 
     for (igraph_integer_t v = 0; v < n; v++) {
         igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
@@ -2579,7 +2623,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
         }
     }
 
-    IGRAPH_VECTOR_INIT_FINALLY(&comm_mass, maxid + 1);
+    IGRAPH_SAFE_ADD(maxid, 1, &id_count);
+    IGRAPH_VECTOR_INIT_FINALLY(&comm_mass, id_count);
     for (igraph_integer_t v = 0; v < n; v++) {
         igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
         igraph_integer_t k = igraph_vector_int_size(sigma);
@@ -2616,7 +2661,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
             }
         }
         if (shared > 0) {
-            q += 2 * w * shared / sqrt((igraph_real_t) (kf * kt));
+            q += 2 * w * shared /
+                 (sqrt((igraph_real_t) kf) * sqrt((igraph_real_t) kt));
         }
     }
 
@@ -2627,8 +2673,13 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
     igraph_vector_destroy(&comm_mass);
     IGRAPH_FINALLY_CLEAN(1);
 
-    if (total_edge_weight > 0) {
-        q /= 2.0 * total_edge_weight;
+    if (!(total_edge_weight > 0.0) || !isfinite(total_edge_weight)) {
+        IGRAPH_ERROR("Overlapping Leiden quality requires positive finite total edge weight.",
+                     IGRAPH_EINVAL);
+    }
+    q /= 2.0 * total_edge_weight;
+    if (!isfinite(q)) {
+        IGRAPH_ERROR("Overlapping Leiden quality overflowed.", IGRAPH_EOVERFLOW);
     }
     *quality = q;
 
@@ -2640,8 +2691,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
  * edge, token pair) combination with weight A_uv f_u f_v. With the
  * membership-vector lengths frozen, the disjoint CPM on this graph equals
  * the overlapping quality Q, which is what lets the original refinement
- * and aggregation machinery run unchanged on top of it. Self-loops are
- * skipped: their contribution to Q is membership-independent.
+ * and aggregation machinery run unchanged on top of it. Self-loop skipping
+ * remains defensive; the public overlapping entry point rejects looped input.
  *
  * token_graph is created here (uninitialized on entry); the remaining
  * output vectors must be initialized. */
@@ -2658,12 +2709,17 @@ static igraph_error_t igraph_i_community_leiden_overlap_tokens(
     const igraph_integer_t n = igraph_vcount(graph);
     const igraph_integer_t m = igraph_ecount(graph);
     igraph_vector_int_t token_edges;
-    igraph_integer_t nb_tokens = 0;
+    igraph_integer_t nb_tokens = 0, nb_token_edges = 0;
+    igraph_integer_t token_offset_size, token_endpoint_count;
+    int interrupt_iter = 0;
 
-    IGRAPH_CHECK(igraph_vector_int_resize(token_offset, n + 1));
+    IGRAPH_SAFE_ADD(n, 1, &token_offset_size);
+    IGRAPH_CHECK(igraph_vector_int_resize(token_offset, token_offset_size));
     for (igraph_integer_t v = 0; v < n; v++) {
+        const igraph_integer_t k =
+            igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, v));
         VECTOR(*token_offset)[v] = nb_tokens;
-        nb_tokens += igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, v));
+        IGRAPH_SAFE_ADD(nb_tokens, k, &nb_tokens);
     }
     VECTOR(*token_offset)[n] = nb_tokens;
 
@@ -2683,6 +2739,28 @@ static igraph_error_t igraph_i_community_leiden_overlap_tokens(
     IGRAPH_VECTOR_INT_INIT_FINALLY(&token_edges, 0);
     igraph_vector_clear(token_edge_weights);
 
+    /* Preflight all materialized token edges before any endpoint growth. */
+    for (igraph_integer_t e = 0; e < m; e++) {
+        const igraph_integer_t from = IGRAPH_FROM(graph, e);
+        const igraph_integer_t to = IGRAPH_TO(graph, e);
+        igraph_integer_t pair_edges;
+        if (from == to) {
+            continue;
+        }
+        IGRAPH_SAFE_MULT(
+            igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, from)),
+            igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, to)),
+            &pair_edges);
+        IGRAPH_SAFE_ADD(nb_token_edges, pair_edges, &nb_token_edges);
+        if (nb_token_edges > IGRAPH_ECOUNT_MAX) {
+            IGRAPH_ERROR("Overlapping Leiden token graph exceeds igraph's edge-count limit.",
+                         IGRAPH_EOVERFLOW);
+        }
+    }
+    IGRAPH_SAFE_MULT(nb_token_edges, 2, &token_endpoint_count);
+    IGRAPH_CHECK(igraph_vector_int_reserve(&token_edges, token_endpoint_count));
+    IGRAPH_CHECK(igraph_vector_reserve(token_edge_weights, nb_token_edges));
+
     for (igraph_integer_t e = 0; e < m; e++) {
         igraph_integer_t from = IGRAPH_FROM(graph, e), to = IGRAPH_TO(graph, e);
         igraph_integer_t kf, kt;
@@ -2692,12 +2770,19 @@ static igraph_error_t igraph_i_community_leiden_overlap_tokens(
         }
         kf = igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, from));
         kt = igraph_vector_int_size(igraph_vector_int_list_get_ptr(memberships, to));
-        wff = VECTOR(*edge_weights)[e] / sqrt((igraph_real_t) (kf * kt));
+        wff = VECTOR(*edge_weights)[e] /
+              (sqrt((igraph_real_t) kf) * sqrt((igraph_real_t) kt));
         for (igraph_integer_t i = 0; i < kf; i++) {
             for (igraph_integer_t j = 0; j < kt; j++) {
                 IGRAPH_CHECK(igraph_vector_int_push_back(&token_edges, VECTOR(*token_offset)[from] + i));
                 IGRAPH_CHECK(igraph_vector_int_push_back(&token_edges, VECTOR(*token_offset)[to] + j));
                 IGRAPH_CHECK(igraph_vector_push_back(token_edge_weights, wff));
+                if (++interrupt_iter >= (1 << 13)) {
+                    if (igraph_allow_interruption()) {
+                        IGRAPH_ERROR("Interrupted.", IGRAPH_INTERRUPTED);
+                    }
+                    interrupt_iter = 0;
+                }
             }
         }
     }
@@ -2758,8 +2843,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_project(
 }
 
 /* One full iteration of the overlapping Leiden algorithm:
- * (1) overlapping local moving on the original graph (exact potential
- *     game over ADD / REMOVE / SUBSTITUTE actions);
+ * (1) overlapping local moving on the original graph (a complete sorted-prefix
+ *     response in the exact-potential game);
  * (2) freeze the membership-vector lengths and materialize the token
  *     graph;
  * (3) run the complete original (disjoint) multi-level Leiden machinery
@@ -2895,6 +2980,129 @@ static igraph_error_t igraph_i_community_leiden_overlap_validate_start(
     return IGRAPH_SUCCESS;
 }
 
+/* Validate the numeric and structural domain promised by the overlapping
+ * unit-l2 CPM implementation before allocating its workspaces or performing
+ * objective arithmetic. The disjoint Leiden path retains its own historical
+ * input contract. */
+static igraph_error_t igraph_i_community_leiden_overlap_validate_domain(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *node_weights,
+        const igraph_real_t resolution_parameter,
+        const igraph_real_t beta,
+        const igraph_integer_t max_memberships,
+        const igraph_bool_t local_move_only) {
+    const igraph_integer_t n = igraph_vcount(graph);
+    const igraph_integer_t m = igraph_ecount(graph);
+    igraph_integer_t label_bound, label_storage_bound;
+    igraph_real_t total_edge_weight = edge_weights ? 0.0 : (igraph_real_t) m;
+    igraph_real_t total_node_weight = node_weights ? 0.0 : (igraph_real_t) n;
+    igraph_bool_t has_loop;
+
+    if (igraph_is_directed(graph)) {
+        IGRAPH_ERROR("Overlapping Leiden requires an undirected graph.", IGRAPH_EINVAL);
+    }
+    IGRAPH_CHECK(igraph_has_loop(graph, &has_loop));
+    if (has_loop) {
+        IGRAPH_ERROR("Overlapping Leiden requires a loopless graph.", IGRAPH_EINVAL);
+    }
+    if (n < 1 || m < 1) {
+        IGRAPH_ERROR("Overlapping Leiden requires a nonempty graph with at least one edge.",
+                     IGRAPH_EINVAL);
+    }
+    if (!isfinite(resolution_parameter)) {
+        IGRAPH_ERROR("Overlapping Leiden resolution must be finite.", IGRAPH_EINVAL);
+    }
+    if (!isfinite(beta) || beta < 0.0) {
+        IGRAPH_ERROR("Overlapping Leiden beta must be finite and non-negative.",
+                     IGRAPH_EINVAL);
+    }
+    if (max_memberships > n) {
+        IGRAPH_ERROR("Overlapping Leiden max_memberships must not exceed the number of vertices.",
+                     IGRAPH_EINVAL);
+    }
+
+    IGRAPH_SAFE_MULT(n, max_memberships, &label_bound);
+    IGRAPH_SAFE_ADD(label_bound, 1, &label_storage_bound);
+    (void) label_storage_bound;
+
+    if (edge_weights) {
+        if (igraph_vector_size(edge_weights) != m) {
+            IGRAPH_ERROR("Edge weight vector length does not match the number of edges.",
+                         IGRAPH_EINVAL);
+        }
+        if (!igraph_vector_is_all_finite(edge_weights) ||
+            igraph_vector_min(edge_weights) < 0.0) {
+            IGRAPH_ERROR("Overlapping Leiden edge weights must be finite and non-negative.",
+                         IGRAPH_EINVAL);
+        }
+        for (igraph_integer_t e = 0; e < m; e++) {
+            total_edge_weight += VECTOR(*edge_weights)[e];
+            if (!isfinite(total_edge_weight)) {
+                IGRAPH_ERROR("Overlapping Leiden total edge weight overflowed.",
+                             IGRAPH_EOVERFLOW);
+            }
+        }
+    }
+    if (!(total_edge_weight > 0.0) || !isfinite(total_edge_weight)) {
+        IGRAPH_ERROR("Overlapping Leiden requires positive finite total edge weight.",
+                     IGRAPH_EINVAL);
+    }
+    {
+        igraph_real_t safe_total_edge_weight =
+            DBL_MAX / 4.0 / (igraph_real_t) max_memberships;
+        if (total_edge_weight > safe_total_edge_weight) {
+            IGRAPH_ERROR("Overlapping Leiden edge-weight arithmetic would overflow.",
+                         IGRAPH_EOVERFLOW);
+        }
+    }
+
+    if (node_weights) {
+        if (igraph_vector_size(node_weights) != n) {
+            IGRAPH_ERROR("Node weight vector length does not match the number of vertices.",
+                         IGRAPH_EINVAL);
+        }
+        if (!igraph_vector_is_all_finite(node_weights) ||
+            igraph_vector_min(node_weights) < 0.0) {
+            IGRAPH_ERROR("Overlapping Leiden node weights must be finite and non-negative.",
+                         IGRAPH_EINVAL);
+        }
+        for (igraph_integer_t v = 0; v < n; v++) {
+            total_node_weight += VECTOR(*node_weights)[v];
+            if (!isfinite(total_node_weight)) {
+                IGRAPH_ERROR("Overlapping Leiden total node weight overflowed.",
+                             IGRAPH_EOVERFLOW);
+            }
+        }
+    }
+
+    /* The largest original-space mass penalty is bounded by
+     * |gamma| (sum_v w_v)^2. Token collisions can concentrate at most an
+     * additional factor max_memberships in a temporary token community. */
+    if (total_node_weight > 1.0 && resolution_parameter != 0.0) {
+        igraph_real_t safe_resolution =
+            DBL_MAX / 2.0 / (igraph_real_t) max_memberships;
+        safe_resolution /= total_node_weight;
+        safe_resolution /= total_node_weight;
+        if (fabs(resolution_parameter) > safe_resolution) {
+            IGRAPH_ERROR("Overlapping Leiden crowding term would overflow.",
+                         IGRAPH_EOVERFLOW);
+        }
+    }
+
+    if (!local_move_only) {
+        igraph_integer_t cap_squared, token_edge_bound;
+        IGRAPH_SAFE_MULT(max_memberships, max_memberships, &cap_squared);
+        IGRAPH_SAFE_MULT(m, cap_squared, &token_edge_bound);
+        if (token_edge_bound > IGRAPH_ECOUNT_MAX) {
+            IGRAPH_ERROR("Overlapping Leiden token graph may exceed igraph's edge-count limit.",
+                         IGRAPH_EOVERFLOW);
+        }
+    }
+
+    return IGRAPH_SUCCESS;
+}
+
 /* Full multi-iteration overlapping Leiden (max_memberships > 1 path). */
 static igraph_error_t igraph_i_community_leiden_run_overlapping(
         const igraph_t *graph,
@@ -2910,7 +3118,7 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     igraph_integer_t i_nb_clusters;
     igraph_bool_t changed = true;
     igraph_real_t q_prev, q_cur;
-    const igraph_bool_t quality_guard = !local_move_only && n_iterations < 0;
+    const igraph_bool_t quality_guard = !local_move_only;
     igraph_vector_int_list_t previous_memberships;
 
     if (!nb_clusters) {
@@ -2921,18 +3129,9 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         IGRAPH_ERROR("Membership list must be provided for overlapping Leiden.",
                      IGRAPH_EINVAL);
     }
-    if (igraph_is_directed(graph)) {
-        IGRAPH_ERROR("Leiden algorithm is only implemented for undirected graphs.",
-                     IGRAPH_EINVAL);
-    }
-    if (edge_weights && igraph_vector_size(edge_weights) != igraph_ecount(graph)) {
-        IGRAPH_ERROR("Edge weight vector length does not match the number of edges.",
-                     IGRAPH_EINVAL);
-    }
-    if (node_weights && igraph_vector_size(node_weights) != n) {
-        IGRAPH_ERROR("Node weight vector length does not match the number of vertices.",
-                     IGRAPH_EINVAL);
-    }
+    IGRAPH_CHECK(igraph_i_community_leiden_overlap_validate_domain(
+        graph, edge_weights, node_weights, resolution_parameter, beta,
+        max_memberships, local_move_only));
 
     if (start && igraph_vector_int_list_size(memberships) != n) {
         IGRAPH_ERROR("Initial membership list length does not equal the number of vertices.",
@@ -2984,10 +3183,11 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     }
 
     /* Iterate the three-phase cycle. Local moving uses a numerical convergence
-     * margin. In full mode with a negative iteration count, snapshot each
-     * cover and keep it only when the recomputed quality improves beyond the
-     * same margin; otherwise restore the snapshot before stopping. The move
-     * ceiling is a last-resort internal error path for unexpected churn. */
+     * margin. In every full-mode iteration, including a positive iteration
+     * budget, snapshot the cover and keep the projected token proposal only
+     * when recomputed original-space quality improves beyond the same margin;
+     * otherwise restore the snapshot before stopping. The move ceiling is a
+     * last-resort internal error path for unexpected churn. */
     for (igraph_integer_t itr = 0;
          n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
