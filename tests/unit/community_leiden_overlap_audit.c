@@ -262,6 +262,54 @@ static void test_diagnostic_checks_have_no_false_mismatch(void) {
     printf("Diagnostic checks have no false mismatch: OK\n");
 }
 
+/* Disjoint CPM with signed edge weights, found by the build-to-build
+ * equivalence harness: the last aggregation level's local moving splits
+ * clusters of aggregate vertices. Earlier releases did not write that level
+ * back to the original vertices, so every iteration reported a change and a
+ * negative iteration budget never returned. The result must also pass the
+ * local-moving certificate. */
+static void test_disjoint_last_level_is_projected(void) {
+    const igraph_int_t e[] = {6, 1, 14, 1, 16, 1, 17, 2, 8, 3, 17, 3, 6, 4, 14, 4, 13, 5,
+                              19, 5, 7, 6, 16, 6, 19, 6, 8, 7, 13, 7, 19, 7, 18, 9, 21, 10,
+                              13, 11, 15, 14, 21, 14, 20, 15, 19, 18};
+    const igraph_real_t w[] = {0.87250426563667516, 0.87856437614189753, -0.60782966326309407,
+                               0.17863898651767429, 1.5366411770996138, -0.98872577562274611,
+                               1.36593910808448, 1.174959849113645, -0.054382351986993593,
+                               1.9706319952132403, 1.8531563597325611, 1.2780643362987743,
+                               -0.41017175803095896, 1.0293519484260891, -0.35159892998302511,
+                               -0.053375278740130816, 1.0656015505516214, 1.7267650321968193,
+                               1.6004706218026841, 1.3445501913036373, -0.37438692971097853,
+                               0.75772998784286083, -0.72160485044115674};
+    const igraph_int_t start[] = {1, 18, 6, 19, 11, 21, 12, 16, 9, 5, 2, 16, 8, 14, 21, 11,
+                                  20, 13, 4, 9, 21, 14};
+    const igraph_vector_int_t edges = igraph_vector_int_view(e, 46);
+    const igraph_vector_t weights = igraph_vector_view(w, 23);
+    igraph_t graph;
+    igraph_vector_int_t membership, certified;
+    igraph_int_t nb;
+    igraph_real_t quality, quality_after;
+
+    igraph_create(&graph, &edges, 22, IGRAPH_UNDIRECTED);
+    igraph_vector_int_init_array(&membership, start, 22);
+    igraph_rng_seed(igraph_rng_default(), 1272836011);
+    IGRAPH_ASSERT(igraph_community_leiden_simple(&graph, &weights, IGRAPH_LEIDEN_OBJECTIVE_CPM,
+                  0.29295743626135579, 0.001, true, -1, &membership, &nb,
+                  &quality) == IGRAPH_SUCCESS);
+
+    /* No vertex can improve by a local move (Nash certificate). */
+    igraph_vector_int_init_copy(&certified, &membership);
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, &weights, NULL, NULL, 0.29295743626135579,
+                  0.001, 1, true, 1, true, true, &certified, NULL, NULL,
+                  &quality_after) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_all_e(&membership, &certified));
+    IGRAPH_ASSERT(quality_after == quality);
+
+    igraph_vector_int_destroy(&certified);
+    igraph_vector_int_destroy(&membership);
+    igraph_destroy(&graph);
+    printf("Disjoint last aggregation level is projected: OK\n");
+}
+
 static igraph_int_t count_duplicate_bodies(const igraph_vector_int_list_t *memberships,
                                            igraph_int_t nb_clusters) {
     const igraph_int_t n = igraph_vector_int_list_size(memberships);
@@ -329,6 +377,7 @@ int main(void) {
     test_disjoint_zero_resolution_signed_witness();
     test_diagnostic_checks_have_no_false_mismatch();
     test_tied_token_proposal_merges_duplicate_labels();
+    test_disjoint_last_level_is_projected();
 
     igraph_rng_seed(igraph_rng_default(), 20260927);
 

@@ -2,4 +2,5 @@ Zero-potential token stage terminates: OK
 Disjoint zero-resolution signed witness: OK
 Diagnostic checks have no false mismatch: OK
 Tied token proposal merges duplicate labels: OK
+Disjoint last aggregation level is projected: OK
 Overlapping Leiden randomized certificate audit: OK

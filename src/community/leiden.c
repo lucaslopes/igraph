@@ -1547,8 +1547,9 @@ static igraph_error_t leiden_merge_vertices(
  *
  *     aggregated_membership[refined_membership[v]] = membership[v].
  *
- * Internal edges of a refined cluster become no edge (their weight re-enters
- * through the quality's vertex-weight term).
+ * Edges inside a refined cluster are dropped: they move together with their
+ * aggregate vertex, so they change no gain at coarser levels (the final
+ * quality is always computed on the original graph).
  */
 
 typedef struct {
@@ -1987,13 +1988,14 @@ static igraph_error_t leiden_levels_coarsen(leiden_levels_t *levels, leiden_leve
 
 /* Optimizes one level: local moving, then (unless local_move_only, or every
  * cluster is a single vertex) refinement, aggregation and descent. Sets
- * *continue_clustering if a coarser level follows. */
+ * *continue_clustering if a coarser level follows, and *level_changed if
+ * local moving moved any vertex of this level. */
 static igraph_error_t leiden_levels_step(leiden_levels_t *levels, leiden_level_t *level,
                                          const leiden_options_t *options,
                                          igraph_int_t level_number,
                                          igraph_vector_int_t *membership,
                                          igraph_int_t *nb_clusters,
-                                         igraph_bool_t *changed,
+                                         igraph_bool_t *level_changed,
                                          igraph_bool_t *continue_clustering) {
     igraph_inclist_t edges_per_vertex;
 
@@ -2001,9 +2003,10 @@ static igraph_error_t leiden_levels_step(leiden_levels_t *levels, leiden_level_t
                                      IGRAPH_LOOPS_TWICE));
     IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_vertex);
 
+    *level_changed = false;
     IGRAPH_CHECK(leiden_fastmove_vertices(level->graph, &edges_per_vertex, level->edge_weights,
                                           level->vertex_out_weights, level->vertex_in_weights,
-                                          options, nb_clusters, level->membership, changed));
+                                          options, nb_clusters, level->membership, level_changed));
 
     *continue_clustering = options->local_move_only ?
                            false : (*nb_clusters < igraph_vcount(level->graph));
@@ -2041,7 +2044,7 @@ static igraph_error_t community_leiden(const igraph_t *graph,
         .vertex_in_weights = vertex_in_weights,
         .membership = membership
     };
-    igraph_bool_t continue_clustering;
+    igraph_bool_t continue_clustering, level_changed;
     igraph_int_t level_number = 0;
 
     IGRAPH_FINALLY(leiden_levels_destroy, &levels);
@@ -2053,11 +2056,24 @@ static igraph_error_t community_leiden(const igraph_t *graph,
     *changed = false;
     do {
         IGRAPH_CHECK(leiden_levels_step(&levels, &level, options, level_number, membership,
-                                        nb_clusters, changed, &continue_clustering));
+                                        nb_clusters, &level_changed, &continue_clustering));
+        if (level_changed) {
+            *changed = true;
+        }
         if (continue_clustering) {
             level_number++;
         }
     } while (continue_clustering);
+
+    /* A level that continues writes its clustering back to the original
+     * vertices, but the last level does not. If its local moving moved
+     * aggregate vertices (it can split clusters, e.g. with negative edge
+     * weights), the result would otherwise keep the previous level's
+     * clustering while reporting a change -- and with n_iterations < 0 the
+     * next iteration would repeat the same moves forever. */
+    if (level_number > 0 && level_changed) {
+        leiden_levels_project(&levels, &level, membership);
+    }
 
     leiden_levels_destroy(&levels);
     IGRAPH_FINALLY_CLEAN(1);
