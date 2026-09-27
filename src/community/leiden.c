@@ -2278,7 +2278,13 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     igraph_integer_t cap = 1, nb_comm_ids = 0, maxdeg = 0, cand_cap;
     igraph_integer_t label_bound, label_storage_bound;
     igraph_integer_t neighbour_cand_bound, active_cand_bound;
-    const igraph_integer_t reconcile_period = 1024;
+    /* A reconciliation rebuilds every community mass from all membership
+     * rows, costing O(sum_v k_v + #labels). Running it every n queue pops
+     * (at least every 1024) keeps its amortized cost O(k_bar + #labels / n)
+     * per pop instead of dominating large sweeps. Masses are rebuilt exactly
+     * at the start of every call, so a sweep without accepted moves (the
+     * certificate) always evaluates exact masses. */
+    const igraph_integer_t reconcile_period = n > 1024 ? n : 1024;
     const igraph_integer_t progress_ceiling =
         igraph_i_leiden_overlap_progress_ceiling(n, max_memberships);
     igraph_integer_t accepted_move_count = 0, queue_pop_count = 0;
