@@ -250,7 +250,7 @@ static igraph_int_t leiden_find_omitted_extreme_cluster(
 /* Overlapping counterpart: mass is fractional community mass comm_mass[c].
  * Active means comm_tokens[c] > 0. The candidate_marker is the per-visit
  * comm_seen scratch (nonzero = already a candidate). Release builds locate
- * this label through igraph_i_leiden_overlap_label_index_t; debug builds keep
+ * this label through igraph_i_leiden_label_index_t; debug builds keep
  * the linear scan as an oracle for every positive-resolution query. */
 static igraph_int_t leiden_find_omitted_extreme_overlap_community(
         const igraph_vector_t *comm_mass,
@@ -292,6 +292,293 @@ static igraph_int_t leiden_find_omitted_extreme_overlap_community(
 }
 #endif
 
+/* Index of the occupied labels (communities) of a local mover, ordered by
+ * mass and then by identifier. It replaces the linear scans that located
+ * omitted labels, i.e. occupied labels that are neither held by the moving
+ * vertex nor by one of its neighbours:
+ *
+ *   ascending order  (resolution * vertex weight > 0): the least massive
+ *     omitted label is the only omitted label that can belong to a best
+ *     response (Proposition "sparse candidate sets suffice"); ties prefer the
+ *     smaller identifier, exactly as the historical scans did;
+ *   descending order (resolution * vertex weight < 0): omitted gains are
+ *     positive and increase with mass, so only the most massive omitted
+ *     labels can enter a best response (the disjoint path takes one, the
+ *     overlapping path the first max_memberships plus rounding ties).
+ *
+ * The index is a binary heap over label identifiers with a position map, keyed
+ * by an external mass vector that the mover keeps current. A query walks the
+ * heap best-first with a small auxiliary heap of positions, so it visits only
+ * the labels that precede the answer (the candidates of the moving vertex)
+ * instead of every label. */
+typedef struct {
+    igraph_vector_int_t heap;   /* label identifiers in heap order */
+    igraph_vector_int_t pos;    /* heap position of each label, -1 if absent */
+    igraph_vector_int_t frontier; /* best-first traversal queue of positions */
+    const igraph_vector_t *mass;
+    igraph_bool_t descending;
+} igraph_i_leiden_label_index_t;
+
+static igraph_bool_t igraph_i_leiden_label_before(
+        const igraph_i_leiden_label_index_t *index,
+        const igraph_integer_t a, const igraph_integer_t b) {
+    const igraph_real_t ma = VECTOR(*index->mass)[a];
+    const igraph_real_t mb = VECTOR(*index->mass)[b];
+
+    if (ma != mb) {
+        return index->descending ? ma > mb : ma < mb;
+    }
+    return a < b;
+}
+
+static void igraph_i_leiden_label_index_destroy(
+        igraph_i_leiden_label_index_t *index) {
+    igraph_vector_int_destroy(&index->frontier);
+    igraph_vector_int_destroy(&index->pos);
+    igraph_vector_int_destroy(&index->heap);
+}
+
+static igraph_error_t igraph_i_leiden_label_index_init(
+        igraph_i_leiden_label_index_t *index,
+        const igraph_vector_t *mass,
+        const igraph_bool_t descending,
+        const igraph_integer_t cap) {
+    index->mass = mass;
+    index->descending = descending;
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->heap, 0);
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->pos, cap);
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->frontier, 0);
+    igraph_vector_int_fill(&index->pos, -1);
+    IGRAPH_FINALLY_CLEAN(3);
+    return IGRAPH_SUCCESS;
+}
+
+/* Keep the position map addressable for every label identifier. */
+static igraph_error_t igraph_i_leiden_label_index_reserve(
+        igraph_i_leiden_label_index_t *index,
+        const igraph_integer_t cap) {
+    const igraph_integer_t old = igraph_vector_int_size(&index->pos);
+
+    if (cap <= old) {
+        return IGRAPH_SUCCESS;
+    }
+    IGRAPH_CHECK(igraph_vector_int_resize(&index->pos, cap));
+    for (igraph_integer_t c = old; c < cap; c++) {
+        VECTOR(index->pos)[c] = -1;
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static void igraph_i_leiden_label_index_swap(
+        igraph_i_leiden_label_index_t *index,
+        const igraph_integer_t i, const igraph_integer_t j) {
+    const igraph_integer_t ci = VECTOR(index->heap)[i];
+    const igraph_integer_t cj = VECTOR(index->heap)[j];
+
+    VECTOR(index->heap)[i] = cj;
+    VECTOR(index->heap)[j] = ci;
+    VECTOR(index->pos)[cj] = i;
+    VECTOR(index->pos)[ci] = j;
+}
+
+static void igraph_i_leiden_label_index_sift_up(
+        igraph_i_leiden_label_index_t *index, igraph_integer_t i) {
+    while (i > 0) {
+        const igraph_integer_t parent = (i - 1) / 2;
+        if (!igraph_i_leiden_label_before(index,
+                VECTOR(index->heap)[i], VECTOR(index->heap)[parent])) {
+            break;
+        }
+        igraph_i_leiden_label_index_swap(index, i, parent);
+        i = parent;
+    }
+}
+
+static void igraph_i_leiden_label_index_sift_down(
+        igraph_i_leiden_label_index_t *index, igraph_integer_t i) {
+    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
+
+    for (;;) {
+        const igraph_integer_t left = 2 * i + 1, right = left + 1;
+        igraph_integer_t best = i;
+        if (left < size && igraph_i_leiden_label_before(index,
+                VECTOR(index->heap)[left], VECTOR(index->heap)[best])) {
+            best = left;
+        }
+        if (right < size && igraph_i_leiden_label_before(index,
+                VECTOR(index->heap)[right], VECTOR(index->heap)[best])) {
+            best = right;
+        }
+        if (best == i) {
+            break;
+        }
+        igraph_i_leiden_label_index_swap(index, i, best);
+        i = best;
+    }
+}
+
+/* Rebuild the index from the token counts in O(#labels). */
+static igraph_error_t igraph_i_leiden_label_index_rebuild(
+        igraph_i_leiden_label_index_t *index,
+        const igraph_vector_int_t *comm_tokens,
+        const igraph_integer_t nb_comm_ids) {
+    igraph_integer_t size;
+
+    IGRAPH_CHECK(igraph_i_leiden_label_index_reserve(
+        index, igraph_vector_int_size(comm_tokens)));
+    igraph_vector_int_fill(&index->pos, -1);
+    igraph_vector_int_clear(&index->heap);
+    for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
+        if (VECTOR(*comm_tokens)[c] > 0) {
+            VECTOR(index->pos)[c] = igraph_vector_int_size(&index->heap);
+            IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
+        }
+    }
+    size = igraph_vector_int_size(&index->heap);
+    for (igraph_integer_t i = size / 2 - 1; i >= 0; i--) {
+        igraph_i_leiden_label_index_sift_down(index, i);
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_error_t igraph_i_leiden_label_index_insert(
+        igraph_i_leiden_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = igraph_vector_int_size(&index->heap);
+
+    IGRAPH_CHECK(igraph_i_leiden_label_index_reserve(index, c + 1));
+    IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
+    VECTOR(index->pos)[c] = i;
+    igraph_i_leiden_label_index_sift_up(index, i);
+    return IGRAPH_SUCCESS;
+}
+
+static void igraph_i_leiden_label_index_remove(
+        igraph_i_leiden_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = VECTOR(index->pos)[c];
+    const igraph_integer_t last = igraph_vector_int_size(&index->heap) - 1;
+
+    if (i < 0) {
+        return;
+    }
+    if (i != last) {
+        igraph_i_leiden_label_index_swap(index, i, last);
+    }
+    igraph_vector_int_pop_back(&index->heap);
+    VECTOR(index->pos)[c] = -1;
+    if (i != last) {
+        const igraph_integer_t moved = VECTOR(index->heap)[i];
+        igraph_i_leiden_label_index_sift_up(index, i);
+        igraph_i_leiden_label_index_sift_down(index, VECTOR(index->pos)[moved]);
+    }
+}
+
+/* Restore the heap order after the mass of an indexed label changed. */
+static void igraph_i_leiden_label_index_update(
+        igraph_i_leiden_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = VECTOR(index->pos)[c];
+
+    if (i < 0) {
+        return;
+    }
+    igraph_i_leiden_label_index_sift_up(index, i);
+    igraph_i_leiden_label_index_sift_down(index, VECTOR(index->pos)[c]);
+}
+
+static igraph_bool_t igraph_i_leiden_label_frontier_before(
+        const igraph_i_leiden_label_index_t *index,
+        const igraph_integer_t p, const igraph_integer_t q) {
+    return igraph_i_leiden_label_before(
+        index, VECTOR(index->heap)[p], VECTOR(index->heap)[q]);
+}
+
+static igraph_error_t igraph_i_leiden_label_frontier_push(
+        igraph_i_leiden_label_index_t *index, const igraph_integer_t p) {
+    igraph_integer_t i = igraph_vector_int_size(&index->frontier);
+
+    IGRAPH_CHECK(igraph_vector_int_push_back(&index->frontier, p));
+    while (i > 0) {
+        const igraph_integer_t parent = (i - 1) / 2;
+        if (!igraph_i_leiden_label_frontier_before(index,
+                VECTOR(index->frontier)[i], VECTOR(index->frontier)[parent])) {
+            break;
+        }
+        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
+        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[parent];
+        VECTOR(index->frontier)[parent] = tmp;
+        i = parent;
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_integer_t igraph_i_leiden_label_frontier_pop(
+        igraph_i_leiden_label_index_t *index) {
+    const igraph_integer_t top = VECTOR(index->frontier)[0];
+    const igraph_integer_t size = igraph_vector_int_size(&index->frontier) - 1;
+    igraph_integer_t i = 0;
+
+    VECTOR(index->frontier)[0] = VECTOR(index->frontier)[size];
+    igraph_vector_int_pop_back(&index->frontier);
+    for (;;) {
+        const igraph_integer_t left = 2 * i + 1, right = left + 1;
+        igraph_integer_t best = i;
+        if (left < size && igraph_i_leiden_label_frontier_before(index,
+                VECTOR(index->frontier)[left], VECTOR(index->frontier)[best])) {
+            best = left;
+        }
+        if (right < size && igraph_i_leiden_label_frontier_before(index,
+                VECTOR(index->frontier)[right], VECTOR(index->frontier)[best])) {
+            best = right;
+        }
+        if (best == i) {
+            break;
+        }
+        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
+        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[best];
+        VECTOR(index->frontier)[best] = tmp;
+        i = best;
+    }
+    return top;
+}
+
+/* Start a best-first traversal that yields labels in index order. */
+static igraph_error_t igraph_i_leiden_label_index_begin(
+        igraph_i_leiden_label_index_t *index) {
+    igraph_vector_int_clear(&index->frontier);
+    if (igraph_vector_int_size(&index->heap) > 0) {
+        IGRAPH_CHECK(igraph_i_leiden_label_frontier_push(index, 0));
+    }
+    return IGRAPH_SUCCESS;
+}
+
+/* Next label in index order whose marker is zero, or -1 when exhausted. */
+/* Exactly one of the markers is used: a nonzero entry of int_marker, or a
+ * set bit of bit_marker, marks a label that is already a candidate. */
+static igraph_error_t igraph_i_leiden_label_index_next(
+        igraph_i_leiden_label_index_t *index,
+        const igraph_vector_int_t *int_marker,
+        const igraph_bitset_t *bit_marker,
+        igraph_integer_t *label) {
+    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
+
+    *label = -1;
+    while (igraph_vector_int_size(&index->frontier) > 0) {
+        const igraph_integer_t p = igraph_i_leiden_label_frontier_pop(index);
+        const igraph_integer_t c = VECTOR(index->heap)[p];
+        const igraph_integer_t left = 2 * p + 1;
+        if (left < size) {
+            IGRAPH_CHECK(igraph_i_leiden_label_frontier_push(index, left));
+        }
+        if (left + 1 < size) {
+            IGRAPH_CHECK(igraph_i_leiden_label_frontier_push(index, left + 1));
+        }
+        if (int_marker ? !VECTOR(*int_marker)[c] : !IGRAPH_BIT_TEST(*bit_marker, c)) {
+            *label = c;
+            return IGRAPH_SUCCESS;
+        }
+    }
+    return IGRAPH_SUCCESS;
+}
+
 /* Move vertices in order to improve the quality of a partition.
  *
  * This function considers each vertex and greedily moves it to a community
@@ -328,6 +615,13 @@ static igraph_error_t leiden_fastmove_vertices(
     const igraph_bool_t directed = (vertex_in_weights != NULL);
     const igraph_bool_t count_constrained =
         max_total_communities >= 0 || n_communities >= 0;
+    /* Undirected omitted-cluster queries use a mass-ordered index of the
+     * occupied clusters. Directed masses depend on the moving vertex's in-
+     * and out-weights, so directed graphs keep the linear scan, as do
+     * vertices whose weight has the opposite sign of the resolution. */
+    const igraph_bool_t use_cluster_index = !directed && resolution != 0.0 &&
+        (!allow_isolation || resolution < 0.0 || count_constrained);
+    igraph_i_leiden_label_index_t cluster_index;
     igraph_int_t occupied_clusters = 0;
     igraph_dqueue_int_t unstable_vertices;
     igraph_real_t max_diff, diff;
@@ -383,6 +677,14 @@ static igraph_error_t leiden_fastmove_vertices(
         }
     }
 
+    IGRAPH_CHECK(igraph_i_leiden_label_index_init(
+        &cluster_index, &cluster_out_weights, resolution < 0.0, use_cluster_index ? n : 0));
+    IGRAPH_FINALLY(igraph_i_leiden_label_index_destroy, &cluster_index);
+    if (use_cluster_index) {
+        IGRAPH_CHECK(igraph_i_leiden_label_index_rebuild(
+            &cluster_index, &nb_vertices_per_cluster, n));
+    }
+
     /* Initialize vectors to be used in calculating differences */
     IGRAPH_VECTOR_INIT_FINALLY(&edge_weights_per_cluster, n);
 
@@ -406,6 +708,11 @@ static igraph_error_t leiden_fastmove_vertices(
         if (VECTOR(nb_vertices_per_cluster)[current_cluster] == 0) {
             occupied_clusters--;
             IGRAPH_CHECK(igraph_stack_int_push(&empty_clusters, current_cluster));
+            if (use_cluster_index) {
+                igraph_i_leiden_label_index_remove(&cluster_index, current_cluster);
+            }
+        } else if (use_cluster_index) {
+            igraph_i_leiden_label_index_update(&cluster_index, current_cluster);
         }
 
         /* Candidate communities for a best response (Definition 2/3 of
@@ -457,15 +764,32 @@ static igraph_error_t leiden_fastmove_vertices(
             if (!allow_isolation || signed_scale < 0.0 ||
                 (count_constrained && !fresh_offered &&
                  VECTOR(nb_vertices_per_cluster)[current_cluster] > 0)) {
-                igraph_int_t omitted = leiden_find_omitted_extreme_cluster(
-                    &cluster_out_weights,
-                    directed ? &cluster_in_weights : NULL,
-                    &nb_vertices_per_cluster,
-                    &neighbor_cluster_added,
-                    n,
-                    VECTOR(*vertex_out_weights)[v],
-                    directed ? VECTOR(*vertex_in_weights)[v] : 0.0,
-                    resolution);
+                igraph_int_t omitted;
+                if (use_cluster_index && signed_scale != 0.0 &&
+                    (signed_scale > 0.0) == (resolution > 0.0)) {
+                    IGRAPH_CHECK(igraph_i_leiden_label_index_begin(&cluster_index));
+                    IGRAPH_CHECK(igraph_i_leiden_label_index_next(
+                        &cluster_index, NULL, &neighbor_cluster_added, &omitted));
+#ifndef NDEBUG
+                    if (omitted != leiden_find_omitted_extreme_cluster(
+                            &cluster_out_weights, NULL, &nb_vertices_per_cluster,
+                            &neighbor_cluster_added, n, VECTOR(*vertex_out_weights)[v],
+                            0.0, resolution)) {
+                        IGRAPH_ERROR("Leiden cluster index disagrees with the "
+                                     "omitted-cluster scan.", IGRAPH_EINTERNAL);
+                    }
+#endif
+                } else {
+                    omitted = leiden_find_omitted_extreme_cluster(
+                        &cluster_out_weights,
+                        directed ? &cluster_in_weights : NULL,
+                        &nb_vertices_per_cluster,
+                        &neighbor_cluster_added,
+                        n,
+                        VECTOR(*vertex_out_weights)[v],
+                        directed ? VECTOR(*vertex_in_weights)[v] : 0.0,
+                        resolution);
+                }
                 if (omitted >= 0) {
                     IGRAPH_BIT_SET(neighbor_cluster_added, omitted);
                     VECTOR(neighbor_clusters)[nb_neigh_clusters++] = omitted;
@@ -518,6 +842,13 @@ static igraph_error_t leiden_fastmove_vertices(
             VECTOR(cluster_in_weights)[best_cluster] += VECTOR(*vertex_in_weights)[v];
         }
         VECTOR(nb_vertices_per_cluster)[best_cluster]++;
+        if (use_cluster_index) {
+            if (VECTOR(nb_vertices_per_cluster)[best_cluster] == 1) {
+                IGRAPH_CHECK(igraph_i_leiden_label_index_insert(&cluster_index, best_cluster));
+            } else {
+                igraph_i_leiden_label_index_update(&cluster_index, best_cluster);
+            }
+        }
         if (best_cluster == igraph_stack_int_top(&empty_clusters)) {
             igraph_stack_int_pop(&empty_clusters);
         }
@@ -553,6 +884,7 @@ static igraph_error_t leiden_fastmove_vertices(
     igraph_vector_int_destroy(&neighbor_clusters);
     igraph_bitset_destroy(&neighbor_cluster_added);
     igraph_vector_destroy(&edge_weights_per_cluster);
+    igraph_i_leiden_label_index_destroy(&cluster_index);
     igraph_stack_int_destroy(&empty_clusters);
     igraph_vector_int_destroy(&nb_vertices_per_cluster);
     if (directed) igraph_vector_destroy(&cluster_in_weights);
@@ -561,9 +893,9 @@ static igraph_error_t leiden_fastmove_vertices(
     igraph_dqueue_int_destroy(&unstable_vertices);
     igraph_bitset_destroy(&vertex_is_stable);
     if (directed) {
-        IGRAPH_FINALLY_CLEAN(10);
+        IGRAPH_FINALLY_CLEAN(11);
     } else {
-        IGRAPH_FINALLY_CLEAN(9);
+        IGRAPH_FINALLY_CLEAN(10);
     }
 
     return IGRAPH_SUCCESS;
@@ -2355,288 +2687,6 @@ static igraph_error_t igraph_i_leiden_overlap_cand_buffer_push(
     return IGRAPH_SUCCESS;
 }
 
-/* Index of the active (occupied) overlapping labels, ordered by mass and then
- * by identifier. It replaces the linear scans that located omitted labels,
- * i.e. active labels that are neither held by the moving vertex nor by one of
- * its neighbours:
- *
- *   ascending order  (resolution > 0): the least massive omitted label is the
- *     only omitted label that can belong to a best response (Proposition
- *     "sparse candidate sets suffice"); ties prefer the smaller identifier,
- *     exactly as the historical scan did;
- *   descending order (resolution < 0): omitted gains are positive and increase
- *     with mass, so only the most massive omitted labels can enter the first
- *     max_memberships positions of the sorted candidate list.
- *
- * The index is a binary heap over label identifiers with a position map. A
- * query walks the heap best-first with a small auxiliary heap of positions,
- * so it visits only the labels that precede the answer (the candidates of
- * the moving vertex) instead of every label. */
-typedef struct {
-    igraph_vector_int_t heap;   /* label identifiers in heap order */
-    igraph_vector_int_t pos;    /* heap position of each label, -1 if absent */
-    igraph_vector_int_t frontier; /* best-first traversal queue of positions */
-    const igraph_vector_t *mass;
-    igraph_bool_t descending;
-} igraph_i_leiden_overlap_label_index_t;
-
-static igraph_bool_t igraph_i_leiden_overlap_label_before(
-        const igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_integer_t a, const igraph_integer_t b) {
-    const igraph_real_t ma = VECTOR(*index->mass)[a];
-    const igraph_real_t mb = VECTOR(*index->mass)[b];
-
-    if (ma != mb) {
-        return index->descending ? ma > mb : ma < mb;
-    }
-    return a < b;
-}
-
-static void igraph_i_leiden_overlap_label_index_destroy(
-        igraph_i_leiden_overlap_label_index_t *index) {
-    igraph_vector_int_destroy(&index->frontier);
-    igraph_vector_int_destroy(&index->pos);
-    igraph_vector_int_destroy(&index->heap);
-}
-
-static igraph_error_t igraph_i_leiden_overlap_label_index_init(
-        igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_vector_t *mass,
-        const igraph_bool_t descending,
-        const igraph_integer_t cap) {
-    index->mass = mass;
-    index->descending = descending;
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->heap, 0);
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->pos, cap);
-    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->frontier, 0);
-    igraph_vector_int_fill(&index->pos, -1);
-    IGRAPH_FINALLY_CLEAN(3);
-    return IGRAPH_SUCCESS;
-}
-
-/* Keep the position map addressable for every label identifier. */
-static igraph_error_t igraph_i_leiden_overlap_label_index_reserve(
-        igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_integer_t cap) {
-    const igraph_integer_t old = igraph_vector_int_size(&index->pos);
-
-    if (cap <= old) {
-        return IGRAPH_SUCCESS;
-    }
-    IGRAPH_CHECK(igraph_vector_int_resize(&index->pos, cap));
-    for (igraph_integer_t c = old; c < cap; c++) {
-        VECTOR(index->pos)[c] = -1;
-    }
-    return IGRAPH_SUCCESS;
-}
-
-static void igraph_i_leiden_overlap_label_index_swap(
-        igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_integer_t i, const igraph_integer_t j) {
-    const igraph_integer_t ci = VECTOR(index->heap)[i];
-    const igraph_integer_t cj = VECTOR(index->heap)[j];
-
-    VECTOR(index->heap)[i] = cj;
-    VECTOR(index->heap)[j] = ci;
-    VECTOR(index->pos)[cj] = i;
-    VECTOR(index->pos)[ci] = j;
-}
-
-static void igraph_i_leiden_overlap_label_index_sift_up(
-        igraph_i_leiden_overlap_label_index_t *index, igraph_integer_t i) {
-    while (i > 0) {
-        const igraph_integer_t parent = (i - 1) / 2;
-        if (!igraph_i_leiden_overlap_label_before(index,
-                VECTOR(index->heap)[i], VECTOR(index->heap)[parent])) {
-            break;
-        }
-        igraph_i_leiden_overlap_label_index_swap(index, i, parent);
-        i = parent;
-    }
-}
-
-static void igraph_i_leiden_overlap_label_index_sift_down(
-        igraph_i_leiden_overlap_label_index_t *index, igraph_integer_t i) {
-    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
-
-    for (;;) {
-        const igraph_integer_t left = 2 * i + 1, right = left + 1;
-        igraph_integer_t best = i;
-        if (left < size && igraph_i_leiden_overlap_label_before(index,
-                VECTOR(index->heap)[left], VECTOR(index->heap)[best])) {
-            best = left;
-        }
-        if (right < size && igraph_i_leiden_overlap_label_before(index,
-                VECTOR(index->heap)[right], VECTOR(index->heap)[best])) {
-            best = right;
-        }
-        if (best == i) {
-            break;
-        }
-        igraph_i_leiden_overlap_label_index_swap(index, i, best);
-        i = best;
-    }
-}
-
-/* Rebuild the index from the token counts in O(#labels). */
-static igraph_error_t igraph_i_leiden_overlap_label_index_rebuild(
-        igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_vector_int_t *comm_tokens,
-        const igraph_integer_t nb_comm_ids) {
-    igraph_integer_t size;
-
-    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_reserve(
-        index, igraph_vector_int_size(comm_tokens)));
-    igraph_vector_int_fill(&index->pos, -1);
-    igraph_vector_int_clear(&index->heap);
-    for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
-        if (VECTOR(*comm_tokens)[c] > 0) {
-            VECTOR(index->pos)[c] = igraph_vector_int_size(&index->heap);
-            IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
-        }
-    }
-    size = igraph_vector_int_size(&index->heap);
-    for (igraph_integer_t i = size / 2 - 1; i >= 0; i--) {
-        igraph_i_leiden_overlap_label_index_sift_down(index, i);
-    }
-    return IGRAPH_SUCCESS;
-}
-
-static igraph_error_t igraph_i_leiden_overlap_label_index_insert(
-        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
-    const igraph_integer_t i = igraph_vector_int_size(&index->heap);
-
-    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_reserve(index, c + 1));
-    IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
-    VECTOR(index->pos)[c] = i;
-    igraph_i_leiden_overlap_label_index_sift_up(index, i);
-    return IGRAPH_SUCCESS;
-}
-
-static void igraph_i_leiden_overlap_label_index_remove(
-        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
-    const igraph_integer_t i = VECTOR(index->pos)[c];
-    const igraph_integer_t last = igraph_vector_int_size(&index->heap) - 1;
-
-    if (i < 0) {
-        return;
-    }
-    if (i != last) {
-        igraph_i_leiden_overlap_label_index_swap(index, i, last);
-    }
-    igraph_vector_int_pop_back(&index->heap);
-    VECTOR(index->pos)[c] = -1;
-    if (i != last) {
-        const igraph_integer_t moved = VECTOR(index->heap)[i];
-        igraph_i_leiden_overlap_label_index_sift_up(index, i);
-        igraph_i_leiden_overlap_label_index_sift_down(index, VECTOR(index->pos)[moved]);
-    }
-}
-
-/* Restore the heap order after the mass of an indexed label changed. */
-static void igraph_i_leiden_overlap_label_index_update(
-        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
-    const igraph_integer_t i = VECTOR(index->pos)[c];
-
-    if (i < 0) {
-        return;
-    }
-    igraph_i_leiden_overlap_label_index_sift_up(index, i);
-    igraph_i_leiden_overlap_label_index_sift_down(index, VECTOR(index->pos)[c]);
-}
-
-static igraph_bool_t igraph_i_leiden_overlap_frontier_before(
-        const igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_integer_t p, const igraph_integer_t q) {
-    return igraph_i_leiden_overlap_label_before(
-        index, VECTOR(index->heap)[p], VECTOR(index->heap)[q]);
-}
-
-static igraph_error_t igraph_i_leiden_overlap_frontier_push(
-        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t p) {
-    igraph_integer_t i = igraph_vector_int_size(&index->frontier);
-
-    IGRAPH_CHECK(igraph_vector_int_push_back(&index->frontier, p));
-    while (i > 0) {
-        const igraph_integer_t parent = (i - 1) / 2;
-        if (!igraph_i_leiden_overlap_frontier_before(index,
-                VECTOR(index->frontier)[i], VECTOR(index->frontier)[parent])) {
-            break;
-        }
-        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
-        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[parent];
-        VECTOR(index->frontier)[parent] = tmp;
-        i = parent;
-    }
-    return IGRAPH_SUCCESS;
-}
-
-static igraph_integer_t igraph_i_leiden_overlap_frontier_pop(
-        igraph_i_leiden_overlap_label_index_t *index) {
-    const igraph_integer_t top = VECTOR(index->frontier)[0];
-    const igraph_integer_t size = igraph_vector_int_size(&index->frontier) - 1;
-    igraph_integer_t i = 0;
-
-    VECTOR(index->frontier)[0] = VECTOR(index->frontier)[size];
-    igraph_vector_int_pop_back(&index->frontier);
-    for (;;) {
-        const igraph_integer_t left = 2 * i + 1, right = left + 1;
-        igraph_integer_t best = i;
-        if (left < size && igraph_i_leiden_overlap_frontier_before(index,
-                VECTOR(index->frontier)[left], VECTOR(index->frontier)[best])) {
-            best = left;
-        }
-        if (right < size && igraph_i_leiden_overlap_frontier_before(index,
-                VECTOR(index->frontier)[right], VECTOR(index->frontier)[best])) {
-            best = right;
-        }
-        if (best == i) {
-            break;
-        }
-        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
-        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[best];
-        VECTOR(index->frontier)[best] = tmp;
-        i = best;
-    }
-    return top;
-}
-
-/* Start a best-first traversal that yields labels in index order. */
-static igraph_error_t igraph_i_leiden_overlap_label_index_begin(
-        igraph_i_leiden_overlap_label_index_t *index) {
-    igraph_vector_int_clear(&index->frontier);
-    if (igraph_vector_int_size(&index->heap) > 0) {
-        IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, 0));
-    }
-    return IGRAPH_SUCCESS;
-}
-
-/* Next label in index order whose marker is zero, or -1 when exhausted. */
-static igraph_error_t igraph_i_leiden_overlap_label_index_next(
-        igraph_i_leiden_overlap_label_index_t *index,
-        const igraph_vector_int_t *marker,
-        igraph_integer_t *label) {
-    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
-
-    *label = -1;
-    while (igraph_vector_int_size(&index->frontier) > 0) {
-        const igraph_integer_t p = igraph_i_leiden_overlap_frontier_pop(index);
-        const igraph_integer_t c = VECTOR(index->heap)[p];
-        const igraph_integer_t left = 2 * p + 1;
-        if (left < size) {
-            IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, left));
-        }
-        if (left + 1 < size) {
-            IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, left + 1));
-        }
-        if (!VECTOR(*marker)[c]) {
-            *label = c;
-            return IGRAPH_SUCCESS;
-        }
-    }
-    return IGRAPH_SUCCESS;
-}
-
 /* Rebuild the fractional community masses, token counts, and recyclable empty
  * community stack from the membership vectors. The incremental state is kept
  * for speed, but this reconciliation is the authoritative representation of
@@ -2772,7 +2822,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     igraph_vector_int_t chosen;
     igraph_i_leiden_overlap_cand_buffer_t cand_buffer = { NULL, 0 };
     igraph_i_leiden_overlap_cand_t *cand;
-    igraph_i_leiden_overlap_label_index_t label_index;
+    igraph_i_leiden_label_index_t label_index;
     /* Omitted active labels are candidates when isolation is disabled and
      * resolution * n_v > 0 (one least-massive label), or when
      * resolution * n_v < 0 (the most massive ones). Node weights are
@@ -2845,16 +2895,16 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
     IGRAPH_STACK_INT_INIT_FINALLY(&empty_comms, 8);
 
-    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_init(
+    IGRAPH_CHECK(igraph_i_leiden_label_index_init(
         &label_index, &comm_mass, resolution_parameter < 0.0,
         use_label_index ? cap : 0));
-    IGRAPH_FINALLY(igraph_i_leiden_overlap_label_index_destroy, &label_index);
+    IGRAPH_FINALLY(igraph_i_leiden_label_index_destroy, &label_index);
 
     IGRAPH_CHECK(igraph_i_leiden_overlap_rebuild_bookkeeping(
         memberships, node_weights, &inv_sqrt, nb_comm_ids, &comm_mass,
         &comm_tokens, &empty_comms, false, &bookkeeping_changed));
     if (use_label_index) {
-        IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_rebuild(
+        IGRAPH_CHECK(igraph_i_leiden_label_index_rebuild(
             &label_index, &comm_tokens, nb_comm_ids));
     }
     for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
@@ -2905,7 +2955,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                 memberships, node_weights, &inv_sqrt, nb_comm_ids, &comm_mass,
                 &comm_tokens, &empty_comms, true, &bookkeeping_changed));
             if (use_label_index) {
-                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_rebuild(
+                IGRAPH_CHECK(igraph_i_leiden_label_index_rebuild(
                     &label_index, &comm_tokens, nb_comm_ids));
             }
             if (bookkeeping_changed) {
@@ -3020,9 +3070,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
             }
 
             if (need_omitted && signed_scale > 0.0) {
-                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_begin(&label_index));
-                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_next(
-                    &label_index, &comm_seen, &omitted));
+                IGRAPH_CHECK(igraph_i_leiden_label_index_begin(&label_index));
+                IGRAPH_CHECK(igraph_i_leiden_label_index_next(
+                    &label_index, &comm_seen, NULL, &omitted));
 #ifndef NDEBUG
                 if (omitted != leiden_find_omitted_extreme_overlap_community(
                         &comm_mass, &comm_tokens, &comm_seen, nb_comm_ids, nv,
@@ -3040,11 +3090,11 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                 igraph_integer_t taken = 0;
                 igraph_real_t last_gain = 0.0;
 
-                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_begin(&label_index));
+                IGRAPH_CHECK(igraph_i_leiden_label_index_begin(&label_index));
                 for (;;) {
                     igraph_real_t gain;
-                    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_next(
-                        &label_index, &comm_seen, &omitted));
+                    IGRAPH_CHECK(igraph_i_leiden_label_index_next(
+                        &label_index, &comm_seen, NULL, &omitted));
                     if (omitted < 0) {
                         break;
                     }
@@ -3226,10 +3276,10 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                             occupied_comms--;
                             IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, c));
                             if (use_label_index) {
-                                igraph_i_leiden_overlap_label_index_remove(&label_index, c);
+                                igraph_i_leiden_label_index_remove(&label_index, c);
                             }
                         } else if (use_label_index) {
-                            igraph_i_leiden_overlap_label_index_update(&label_index, c);
+                            igraph_i_leiden_label_index_update(&label_index, c);
                         }
                     } else if (ia >= k ||
                                VECTOR(chosen)[ib] < VECTOR(*sigma)[ia]) {
@@ -3241,17 +3291,17 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                         }
                         if (use_label_index) {
                             if (VECTOR(comm_tokens)[c] == 1) {
-                                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_insert(
+                                IGRAPH_CHECK(igraph_i_leiden_label_index_insert(
                                     &label_index, c));
                             } else {
-                                igraph_i_leiden_overlap_label_index_update(&label_index, c);
+                                igraph_i_leiden_label_index_update(&label_index, c);
                             }
                         }
                     } else {
                         igraph_integer_t c = VECTOR(*sigma)[ia];
                         VECTOR(comm_mass)[c] += nv * (fnew - fv);
                         if (use_label_index) {
-                            igraph_i_leiden_overlap_label_index_update(&label_index, c);
+                            igraph_i_leiden_label_index_update(&label_index, c);
                         }
                         ia++;
                         ib++;
@@ -3354,7 +3404,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     igraph_vector_int_destroy(&node_order);
     igraph_dqueue_int_destroy(&unstable_nodes);
     igraph_bitset_destroy(&node_is_stable);
-    igraph_i_leiden_overlap_label_index_destroy(&label_index);
+    igraph_i_leiden_label_index_destroy(&label_index);
     igraph_stack_int_destroy(&empty_comms);
     igraph_vector_destroy(&inv_sqrt);
     igraph_vector_int_destroy(&comm_seen);

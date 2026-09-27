@@ -16,7 +16,7 @@
    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-/* Randomized audit of the overlapping (unit-l2 CPM) Leiden local mover.
+/* Randomized audit of the Leiden local movers (disjoint and unit-l2 CPM).
  *
  * Every call with a negative iteration budget must return a cover in which
  * no vertex can improve its utility by more than a small tolerance through a
@@ -192,7 +192,10 @@ int main(void) {
         if (igraph_ecount(&graph) == 0) {
             igraph_add_edge(&graph, 0, 1);
         }
-        max_memberships = RNG_INTEGER(0, 3) == 0 ? n : RNG_INTEGER(2, 5);
+        /* Include the disjoint path (M = 1), which shares the omitted-label
+         * completion through the cluster index. */
+        max_memberships = RNG_INTEGER(0, 4) == 0 ? 1 :
+                          RNG_INTEGER(0, 3) == 0 ? n : RNG_INTEGER(2, 5);
         if (max_memberships > n) {
             max_memberships = n;
         }
