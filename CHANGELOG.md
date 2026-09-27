@@ -1,5 +1,25 @@
 # igraph C library changelog
 
+## [1.0.0.5] - unreleased (lucas-igraph development line)
+
+### Added
+
+- `igraph_community_leiden_with_constraints()` adds two optional global limits on the number of occupied communities to `igraph_community_leiden()`: `max_total_communities` (at most K) and `n_communities` (exactly K), for partitions and overlapping covers. They hold in every local-moving, aggregate and token level; infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`. `igraph_community_leiden()` keeps its ABI.
+
+### Changed
+
+- Overlapping Leiden local moving is several times faster on large graphs: mass reconciliation runs every `max(1024, n)` queue pops instead of every 1024, the duplicate final certificate sweep of local-moving-only runs is skipped, only positive candidate gains are sorted, and omitted labels are found through a mass-ordered index instead of a scan over all labels. The disjoint local mover uses the same index for undirected graphs. Returned covers can differ from 1.0.0.4 where ties are resolved by label identifiers.
+- The overlapping candidate buffer is sized from the neighbourhood and grows on demand instead of reserving `n * max_memberships + 1` entries per call.
+- Overlapping multilevel proposals are compared with the cover reached by the same iteration's local moving, which is restored on rejection.
+- Start labels of overlapping covers may lie below `n * max_memberships` (previously below `n`).
+
+### Fixed
+
+- The overlapping multilevel token stage could cycle forever on rounding noise when pair values tie exactly (for example a complete graph with unit weights and resolution 1).
+- `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget on the disjoint path.
+- The disjoint local mover now offers an omitted cluster at zero resolution with signed edge weights and isolation disabled.
+- The diagnostic checks of `igraph_community_leiden_with_diagnostics()` no longer report false mismatches caused by summation rounding.
+
 ## [1.0.0]
 
 Nearly twenty years after the first igraph release, igraph 1.0 has finally arrived. This release focuses on providing a stable and more consistent interface that users and downstream maintainers can rely on with confidence, as well as adding new features that required API-breaking changes. There is now an official versioning policy, see [`VERSIONING.md`](VERSIONING.md).
