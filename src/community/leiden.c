@@ -3611,9 +3611,12 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality_ext(
     }
 
     for (igraph_integer_t c = 0; c <= maxid; c++) {
-        const igraph_real_t term = resolution_parameter * VECTOR(comm_mass)[c] * VECTOR(comm_mass)[c];
-        q -= term;
-        magnitude += fabs(term);
+        /* Keep the subtraction in a single expression, as before the
+         * magnitude was tracked: splitting it into two statements changes
+         * floating-point contraction and hence the last bit of the returned
+         * quality. */
+        q -= resolution_parameter * VECTOR(comm_mass)[c] * VECTOR(comm_mass)[c];
+        magnitude += fabs(resolution_parameter * VECTOR(comm_mass)[c] * VECTOR(comm_mass)[c]);
     }
     if (term_magnitude) {
         *term_magnitude = magnitude;
