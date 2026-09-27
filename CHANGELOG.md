@@ -19,6 +19,12 @@
 - `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget on the disjoint path.
 - The disjoint local mover now offers an omitted cluster at zero resolution with signed edge weights and isolation disabled.
 - The diagnostic checks of `igraph_community_leiden_with_diagnostics()` no longer report false mismatches caused by summation rounding.
+- The Leiden multilevel driver now writes the last aggregation level back to the original vertices when that level's local moving moved anything. Earlier releases (including upstream igraph) dropped those moves, which with signed edge weights could make `n_iterations < 0` loop forever.
+- The disjoint local mover reports an interruption through the error-unwinding stack instead of returning with live cleanup entries.
+
+### Other
+
+- `src/community/leiden.c` is reorganized into documented sections with a table of contents and small single-purpose functions. Results are bit-identical to the previous development build on 50,000 randomized instances.
 
 ## [1.0.0]
 
