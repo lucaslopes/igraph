@@ -1002,14 +1002,30 @@ static void test_positive_budget_original_quality_guard(void) {
     }
 
     /* This fixed seed made the unguarded 1.0.0.3 path decrease the original
-     * unnormalized potential from 0.39814623902049906 to 0.35. */
+     * unnormalized potential from 0.39814623902049906 to 0.35. The guard
+     * compares the token proposal with the cover reached by the iteration's
+     * local moving and restores that cover on rejection, so the result is
+     * exactly a local-moving-only iteration from the same seed, and never
+     * worse than the start. */
     IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 1452719858) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(igraph_community_leiden(
         &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
         3, true, 1, false, false,
         NULL, &memberships, &nb_clusters, &quality_after) == IGRAPH_SUCCESS);
-    assert_overlapping_covers_equal(&memberships, &snapshot);
-    IGRAPH_ASSERT(igraph_almost_equals(quality_after, quality_before, 1e-12));
+    IGRAPH_ASSERT(quality_after >= quality_before - 1e-12);
+    {
+        igraph_vector_int_list_t local_only;
+        igraph_real_t quality_local;
+        IGRAPH_ASSERT(igraph_vector_int_list_init_copy(&local_only, &snapshot) == IGRAPH_SUCCESS);
+        IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 1452719858) == IGRAPH_SUCCESS);
+        IGRAPH_ASSERT(igraph_community_leiden(
+            &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
+            3, true, 1, false, true,
+            NULL, &local_only, &nb_clusters, &quality_local) == IGRAPH_SUCCESS);
+        assert_overlapping_covers_equal(&memberships, &local_only);
+        IGRAPH_ASSERT(igraph_almost_equals(quality_after, quality_local, 1e-12));
+        igraph_vector_int_list_destroy(&local_only);
+    }
 
     igraph_vector_int_list_destroy(&snapshot);
     igraph_vector_int_list_destroy(&memberships);

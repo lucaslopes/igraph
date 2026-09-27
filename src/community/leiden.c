@@ -1825,9 +1825,11 @@ static igraph_error_t community_leiden(
  *    of times. If this is a negative number, iteration continues until a
  *    local-moving certificate sweep finds no strict (disjoint) or
  *    tolerance-level (overlapping) unilateral improvement. Positive budgets
- *    may stop before this sweep. Every overlapping multilevel iteration is
- *    nevertheless checkpointed and is retained only if the projected cover
- *    improves original-space quality beyond the numerical margin. Two
+ *    may stop before this sweep. Every overlapping multilevel proposal is
+ *    nevertheless checked: the projected cover is retained only if it
+ *    improves original-space quality beyond the numerical margin over the
+ *    cover reached by the iteration's local moving, which is otherwise
+ *    restored. Two
  *    iterations are often sufficient for ordinary use, thus 2 is a
  *    reasonable default.
  * \param beta The randomness used in the refinement step when merging. A small
@@ -2597,11 +2599,11 @@ igraph_error_t igraph_community_leiden_simple(
  * higher-level merges may land two tokens of the same node in the same
  * community; such duplicates are collapsed when projecting back
  * (multiset -> set), and the node is re-examined by the next overlapping
- * phase. Every full-mode iteration checkpoints its phase-entry cover,
- * recomputes the projected cover in original-graph units, and restores the
- * checkpoint unless quality improves beyond the numerical convergence
- * margin. Negative iteration counts additionally request final complete
- * original-space response sweeps.
+ * phase. Every full-mode iteration checkpoints the cover reached by its local
+ * moving, recomputes the projected cover in original-graph units, and
+ * restores that checkpoint (ending the iterations) unless quality improves
+ * beyond the numerical convergence margin. Negative iteration counts
+ * additionally request final complete original-space response sweeps.
  */
 
 typedef struct {
@@ -3794,6 +3796,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
         const igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships,
         igraph_bool_t *changed,
+        igraph_vector_int_list_t *local_snapshot,
+        igraph_real_t *quality_after_local,
         igraph_i_leiden_overlap_trace_t *trace,
         igraph_i_leiden_overlap_checkpoint_t *checkpoint) {
     igraph_inclist_t edges_per_node;
@@ -3829,12 +3833,31 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
 
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, &nb_comms));
 
+    /* The original-space guard of the caller compares the token proposal with
+     * this post-local-moving state, and restores it on rejection, so that a
+     * rejected proposal never discards the local-moving improvement. */
+    if (!local_move_only) {
+        const igraph_integer_t n = igraph_vector_int_list_size(memberships);
+        for (igraph_integer_t v = 0; v < n; v++) {
+            IGRAPH_CHECK(igraph_vector_int_update(
+                igraph_vector_int_list_get_ptr(local_snapshot, v),
+                igraph_vector_int_list_get_ptr(memberships, v)));
+        }
+        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+            graph, edge_weights, node_weights, memberships,
+            resolution_parameter, quality_after_local));
+    }
+
     if (checkpoint) {
         checkpoint->original_weight = igraph_vector_sum(edge_weights);
         checkpoint->local_changed = phase_changed;
-        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
-            graph, edge_weights, node_weights, memberships,
-            resolution_parameter, &checkpoint->quality_after_local));
+        if (local_move_only) {
+            IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                graph, edge_weights, node_weights, memberships,
+                resolution_parameter, &checkpoint->quality_after_local));
+        } else {
+            checkpoint->quality_after_local = *quality_after_local;
+        }
         checkpoint->original_unnormalized = checkpoint->quality_after_local *
                                             checkpoint->original_weight;
     }
@@ -4229,14 +4252,16 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
 
     /* Iterate the three-phase cycle. Local moving uses a numerical convergence
      * margin. In every full-mode iteration, including a positive iteration
-     * budget, snapshot the cover and keep the projected token proposal only
-     * when recomputed original-space quality improves beyond the same margin;
-     * otherwise restore the snapshot before stopping. The move ceiling is a
-     * last-resort internal error path for unexpected churn. */
+     * budget, snapshot the cover reached by local moving and keep the
+     * projected token proposal only when recomputed original-space quality
+     * improves on it beyond the same margin; otherwise restore the snapshot
+     * before stopping. The move ceiling is a last-resort internal error path
+     * for unexpected churn. */
     for (igraph_integer_t itr = 0;
          n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
         const igraph_real_t quality_before = quality_guard ? q_prev : IGRAPH_NAN;
+        igraph_real_t q_local = IGRAPH_NAN;
         igraph_i_leiden_overlap_checkpoint_t checkpoint;
         igraph_i_leiden_overlap_checkpoint_t *checkpoint_ptr =
             projection_trace && !local_move_only ? &checkpoint : NULL;
@@ -4244,19 +4269,13 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         if (trace) {
             trace->stage = itr;
         }
-        if (quality_guard) {
-            for (igraph_integer_t v = 0; v < n; v++) {
-                IGRAPH_CHECK(igraph_vector_int_update(
-                    igraph_vector_int_list_get_ptr(&previous_memberships, v),
-                    igraph_vector_int_list_get_ptr(memberships, v)));
-            }
-        }
 
         changed = false;
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_iteration(graph, i_edge_weights,
                      i_node_weights, resolution_parameter, beta, max_memberships,
                      max_total_communities, n_communities,
                      &allow_isolation, local_move_only, memberships, &changed,
+                     quality_guard ? &previous_memberships : NULL, &q_local,
                      trace, checkpoint_ptr));
         if (quality_guard) {
             igraph_bool_t accepted = true;
@@ -4269,7 +4288,10 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
                     graph, i_edge_weights, i_node_weights, memberships,
                     resolution_parameter, &q_cur));
             }
-            if (!igraph_i_leiden_overlap_is_improvement(q_cur, q_prev)) {
+            /* Keep the token proposal only if it improves the state produced
+             * by this iteration's local moving; otherwise restore that state,
+             * which keeps the local improvement, and end the iterations. */
+            if (!igraph_i_leiden_overlap_is_improvement(q_cur, q_local)) {
                 for (igraph_integer_t v = 0; v < n; v++) {
                     IGRAPH_CHECK(igraph_vector_int_update(
                         igraph_vector_int_list_get_ptr(memberships, v),
@@ -4277,11 +4299,11 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
                 }
                 changed = false;
                 accepted = false;
-                committed_quality = q_prev;
+                committed_quality = q_local;
             } else {
-                q_prev = q_cur;
                 committed_quality = q_cur;
             }
+            q_prev = committed_quality;
 
             if (checkpoint_ptr) {
                 igraph_real_t values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH];

@@ -110,18 +110,18 @@ Memberships: {
   33: ( 1 )
 }
 
-Overlapping Leiden found 2 clusters using CPM (resolution parameter=0.06, max memberships=2), quality is 0.6495.
+Overlapping Leiden found 2 clusters using CPM (resolution parameter=0.06, max memberships=2), quality is 0.6689.
 Memberships: {
   0: ( 0 )
   1: ( 0 )
-  2: ( 0 )
+  2: ( 0 1 )
   3: ( 0 )
   4: ( 0 )
   5: ( 0 )
   6: ( 0 )
   7: ( 0 )
   8: ( 1 )
-  9: ( 0 )
+  9: ( 1 )
   10: ( 0 )
   11: ( 0 )
   12: ( 0 )
