@@ -1611,8 +1611,10 @@ igraph_error_t igraph_community_leiden(
          * Avrachenkov & Menasché, Physica A 680:130989, 2025): refinement and
          * aggregation may rewrite a locally stable partition. When the caller
          * asked for convergence, finish with local-moving-only sweeps on the
-         * original graph until no strict unilateral improvement remains. */
-        if (n_iterations < 0) {
+         * original graph until no strict unilateral improvement remains.
+         * A local-moving-only run already stopped after a complete sweep
+         * without moves, which is that certificate. */
+        if (n_iterations < 0 && !local_move_only) {
             do {
                 changed = false;
                 IGRAPH_CHECK(community_leiden(graph,
@@ -3578,8 +3580,14 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
      * aggregation and quality-guard rollback can leave a cover that is not
      * an overlapping best response. When the caller asked for convergence,
      * finish with overlapping local-moving-only sweeps until no
-     * tolerance-level unilateral improvement remains. */
-    if (n_iterations < 0) {
+     * tolerance-level unilateral improvement remains.
+     *
+     * In local-moving-only mode a negative budget leaves the loop above only
+     * after an iteration whose single local-moving call accepted no move.
+     * That call enqueued every vertex against one unchanged state with the
+     * same candidate policy, so it already is the certificate sweep; a second
+     * identical sweep could not change the cover. */
+    if (n_iterations < 0 && !local_move_only) {
         igraph_inclist_t edges_per_node;
         igraph_integer_t certificate_sweep = 0;
         IGRAPH_CHECK(igraph_inclist_init(graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
