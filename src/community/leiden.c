@@ -2536,7 +2536,40 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         }
         cur_score *= fv;
 
-        qsort(cand, (size_t) ncand, sizeof(*cand), igraph_i_leiden_overlap_cand_cmp);
+        /* Only the prefix scan below consumes the sorted order. If some gain
+         * is positive, appending a non-positive gain g to a prefix with a
+         * positive sum P never raises P / sqrt(j) (P + g <= P and the divisor
+         * grows; rounding is monotone), so every scored prefix beyond the
+         * positive block is dominated by its last positive prefix. If no gain
+         * is positive, a j-set scores at most sqrt(j) g_(1) <= g_(1). Hence
+         * sorting only the positive candidates, or only the best candidate
+         * when none is positive, selects the same response as sorting them
+         * all, while avoiding the sort of the usually long non-positive tail. */
+        {
+            igraph_integer_t npos = 0;
+            for (igraph_integer_t i = 0; i < ncand; i++) {
+                if (cand[i].gain > 0.0) {
+                    const igraph_i_leiden_overlap_cand_t tmp = cand[npos];
+                    cand[npos] = cand[i];
+                    cand[i] = tmp;
+                    npos++;
+                }
+            }
+            if (npos == 0 && ncand > 0) {
+                igraph_integer_t best_i = 0;
+                for (igraph_integer_t i = 1; i < ncand; i++) {
+                    if (igraph_i_leiden_overlap_cand_cmp(&cand[i], &cand[best_i]) < 0) {
+                        best_i = i;
+                    }
+                }
+                const igraph_i_leiden_overlap_cand_t tmp = cand[0];
+                cand[0] = cand[best_i];
+                cand[best_i] = tmp;
+                npos = 1;
+            }
+            qsort(cand, (size_t) npos, sizeof(*cand), igraph_i_leiden_overlap_cand_cmp);
+            jmax = npos < max_memberships ? npos : max_memberships;
+        }
 
         /* Best response: the prefix of length j maximizing
          * (sum of top-j gains) / sqrt(j). Extending the prefix is the ADD
@@ -2545,7 +2578,6 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
          * beyond the numerical convergence margin are adopted. */
         best_score = cur_score;
         prefix = 0.0;
-        jmax = ncand < max_memberships ? ncand : max_memberships;
         for (igraph_integer_t j = 1; j <= jmax; j++) {
             igraph_real_t score;
             prefix += cand[j - 1].gain;
