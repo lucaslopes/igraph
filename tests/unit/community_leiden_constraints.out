@@ -1,4 +1,5 @@
 Constraint input contract: OK
+Zero-budget outputs: OK
 Non-binding bound reproduces the unconstrained call: OK
 Multilevel count witness: OK
 Exhaustive constrained-equilibrium audit: OK

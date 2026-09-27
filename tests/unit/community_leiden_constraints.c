@@ -300,11 +300,52 @@ static void test_multilevel_bound_witness(void) {
     printf("Multilevel count witness: OK\n");
 }
 
+/* A zero iteration budget must still report the start state. */
+static void test_zero_budget_outputs(void) {
+    igraph_t graph;
+    igraph_vector_int_t membership;
+    igraph_vector_int_list_t rows;
+    igraph_int_t nb = -12345;
+    igraph_real_t quality = -777.0;
+
+    igraph_small(&graph, 4, IGRAPH_UNDIRECTED, 0, 1, 2, 3, -1);
+    igraph_vector_int_init(&membership, 0);
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 1, false, 0,
+                  true, false, &membership, NULL, &nb, &quality) == IGRAPH_SUCCESS);
+    /* Singleton start: four clusters, no internal edges, CPM quality
+     * (1/2m) sum_c (2 E_c - gamma n_c^2) = -4 * 0.5 / 4. */
+    IGRAPH_ASSERT(nb == 4);
+    IGRAPH_ASSERT(fabs(quality + 0.5) < 1e-12);
+
+    /* A supplied start is reindexed and scored as given. */
+    VECTOR(membership)[0] = 7; VECTOR(membership)[1] = 7;
+    VECTOR(membership)[2] = 3; VECTOR(membership)[3] = 3;
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 1, true, 0,
+                  true, false, &membership, NULL, &nb, &quality) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(nb == 2);
+    IGRAPH_ASSERT(VECTOR(membership)[0] == VECTOR(membership)[1]);
+    IGRAPH_ASSERT(VECTOR(membership)[2] == VECTOR(membership)[3]);
+    IGRAPH_ASSERT(fabs(quality - (2 * 2 - 0.5 * 8) / 4.0) < 1e-12);
+
+    /* The overlapping path already reported its start state. */
+    igraph_vector_int_list_init(&rows, 0);
+    nb = -12345;
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 2, false, 0,
+                  true, false, NULL, &rows, &nb, &quality) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(nb == 4);
+
+    igraph_vector_int_list_destroy(&rows);
+    igraph_vector_int_destroy(&membership);
+    igraph_destroy(&graph);
+    printf("Zero-budget outputs: OK\n");
+}
+
 int main(void) {
     const igraph_real_t resolutions[] = { 0.0, 0.15, 0.5, 1.0, -0.3 };
     igraph_int_t checked = 0;
 
     test_input_contract();
+    test_zero_budget_outputs();
     test_non_binding_bound_is_identity();
     test_multilevel_bound_witness();
 

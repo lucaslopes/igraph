@@ -2126,6 +2126,17 @@ igraph_error_t igraph_community_leiden_with_constraints(
             } while (changed);
         }
 
+        /* A zero budget performs no iteration, so the loops above did not
+         * set the outputs; report the (reindexed) start state instead. */
+        if (n_iterations == 0) {
+            IGRAPH_CHECK(igraph_reindex_membership(mem, NULL, nb_clusters));
+            if (quality) {
+                IGRAPH_CHECK(leiden_quality(graph, i_edge_weights, i_vertex_out_weights,
+                                            i_vertex_in_weights, mem, *nb_clusters,
+                                            resolution, quality));
+            }
+        }
+
         if (memberships) {
             IGRAPH_CHECK(igraph_vector_int_list_resize(memberships, vcount));
             for (igraph_int_t v = 0; v < vcount; v++) {
