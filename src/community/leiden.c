@@ -187,9 +187,10 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
  * For non-negative resolution this is the minimum-mass community (largest
  * omitted gain, typically <= 0). For negative resolution it is the
  * maximum-mass community. When resolution * vertex_weight is zero, every
- * omitted gain is zero and no extra candidate is needed (ties never force
- * a move under Definition 3 of Felipe, Avrachenkov & Menasché,
- * Physica A 680:130989, 2025).
+ * omitted gain is zero; one omitted community (the smallest identifier) is
+ * still returned, because with signed edge weights the current community
+ * can score below zero and the vertex then strictly prefers any omitted
+ * community. With non-negative edge weights such a candidate never wins.
  *
  * Disjoint undirected mass is cluster_out_weights[c] (after the vertex has
  * been removed). Directed mass is the actual penalty coefficient
@@ -213,9 +214,6 @@ static igraph_int_t leiden_find_omitted_extreme_cluster(
     igraph_real_t best_mass = 0.0;
     igraph_bool_t want_min;
 
-    if (signed_scale == 0.0) {
-        return -1;
-    }
     want_min = (signed_scale > 0.0);
 
     for (igraph_int_t c = 0; c < n_ids; c++) {
@@ -226,6 +224,9 @@ static igraph_int_t leiden_find_omitted_extreme_cluster(
         }
         if (IGRAPH_BIT_TEST(*candidate_marker, c)) {
             continue;
+        }
+        if (signed_scale == 0.0) {
+            return c;
         }
 
         if (directed) {

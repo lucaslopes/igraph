@@ -200,6 +200,35 @@ static void test_zero_potential_token_stage_terminates(void) {
     printf("Zero-potential token stage terminates: OK\n");
 }
 
+/* Disjoint path, signed edge weights, zero resolution, isolation disabled:
+ * vertex 0 sits with vertex 1 across a -1 edge. Every other community has
+ * gain 0 > -1, so a best response must leave; the omitted-community
+ * completion has to offer one although all omitted gains are zero. */
+static void test_disjoint_zero_resolution_signed_witness(void) {
+    igraph_t graph;
+    igraph_vector_t weights;
+    igraph_vector_int_t membership;
+    igraph_int_t nb;
+    igraph_real_t quality;
+
+    igraph_small(&graph, 4, IGRAPH_UNDIRECTED, 0, 1, 2, 3, -1);
+    igraph_vector_init(&weights, 2);
+    VECTOR(weights)[0] = -1.0;
+    VECTOR(weights)[1] = 2.0;
+    igraph_vector_int_init(&membership, 4);
+    VECTOR(membership)[0] = 0; VECTOR(membership)[1] = 0;
+    VECTOR(membership)[2] = 1; VECTOR(membership)[3] = 1;
+    igraph_rng_seed(igraph_rng_default(), 1);
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, &weights, NULL, NULL, 0.0, 0.01, 1, true, -1,
+                  false, true, &membership, NULL, &nb, &quality) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(VECTOR(membership)[0] != VECTOR(membership)[1]);
+    IGRAPH_ASSERT(VECTOR(membership)[2] == VECTOR(membership)[3]);
+    igraph_vector_int_destroy(&membership);
+    igraph_vector_destroy(&weights);
+    igraph_destroy(&graph);
+    printf("Disjoint zero-resolution signed witness: OK\n");
+}
+
 int main(void) {
     const igraph_real_t resolutions[] = { -0.4, -0.05, 0.0, 0.02, 0.1, 0.35, 1.0 };
     const igraph_int_t n_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -207,6 +236,7 @@ int main(void) {
     igraph_real_t worst = 0.0;
 
     test_zero_potential_token_stage_terminates();
+    test_disjoint_zero_resolution_signed_witness();
 
     igraph_rng_seed(igraph_rng_default(), 20260927);
 
