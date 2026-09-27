@@ -676,6 +676,7 @@ add_legacy_tests(
   FOLDER tests/unit NAMES
   community_indexing
   community_leiden
+  community_leiden_overlap_audit
   community_label_propagation
   community_label_propagation2
   community_label_propagation3

@@ -244,9 +244,12 @@ static igraph_int_t leiden_find_omitted_extreme_cluster(
     return best;
 }
 
+#ifndef NDEBUG
 /* Overlapping counterpart: mass is fractional community mass comm_mass[c].
  * Active means comm_tokens[c] > 0. The candidate_marker is the per-visit
- * comm_seen scratch (nonzero = already a candidate). */
+ * comm_seen scratch (nonzero = already a candidate). Release builds locate
+ * this label through igraph_i_leiden_overlap_label_index_t; debug builds keep
+ * the linear scan as an oracle for every positive-resolution query. */
 static igraph_int_t leiden_find_omitted_extreme_overlap_community(
         const igraph_vector_t *comm_mass,
         const igraph_vector_int_t *comm_tokens,
@@ -285,6 +288,7 @@ static igraph_int_t leiden_find_omitted_extreme_overlap_community(
 
     return best;
 }
+#endif
 
 /* Move vertices in order to improve the quality of a partition.
  *
@@ -2145,6 +2149,342 @@ static igraph_error_t igraph_i_leiden_overlap_ensure_cap(
     return IGRAPH_SUCCESS;
 }
 
+/* Growable per-visit candidate buffer. The historical implementation sized
+ * it for the worst negative-resolution case, n * max_memberships + 1 entries,
+ * on every local-moving call. The label index below bounds the omitted
+ * candidates, so the buffer starts from the neighbourhood bound and grows
+ * only when a visit needs more room. The struct is registered once with the
+ * error-unwinding stack, so reallocation never invalidates that entry. */
+typedef struct {
+    igraph_i_leiden_overlap_cand_t *data;
+    igraph_integer_t capacity;
+} igraph_i_leiden_overlap_cand_buffer_t;
+
+static void igraph_i_leiden_overlap_cand_buffer_destroy(
+        igraph_i_leiden_overlap_cand_buffer_t *buffer) {
+    IGRAPH_FREE(buffer->data);
+    buffer->capacity = 0;
+}
+
+static igraph_error_t igraph_i_leiden_overlap_cand_buffer_reserve(
+        igraph_i_leiden_overlap_cand_buffer_t *buffer,
+        const igraph_integer_t needed) {
+    igraph_integer_t newcap;
+    igraph_i_leiden_overlap_cand_t *resized;
+
+    if (needed <= buffer->capacity) {
+        return IGRAPH_SUCCESS;
+    }
+    newcap = buffer->capacity > IGRAPH_INTEGER_MAX / 2 ?
+             IGRAPH_INTEGER_MAX : 2 * buffer->capacity;
+    if (newcap < needed) {
+        newcap = needed;
+    }
+    resized = IGRAPH_REALLOC(buffer->data, newcap, igraph_i_leiden_overlap_cand_t);
+    IGRAPH_CHECK_OOM(resized, "Insufficient memory for overlapping Leiden candidates.");
+    buffer->data = resized;
+    buffer->capacity = newcap;
+
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_error_t igraph_i_leiden_overlap_cand_buffer_push(
+        igraph_i_leiden_overlap_cand_buffer_t *buffer,
+        igraph_integer_t *ncand,
+        const igraph_integer_t comm) {
+    igraph_integer_t needed;
+
+    IGRAPH_SAFE_ADD(*ncand, 1, &needed);
+    IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_reserve(buffer, needed));
+    buffer->data[*ncand].comm = comm;
+    buffer->data[*ncand].gain = 0.0;
+    *ncand = needed;
+
+    return IGRAPH_SUCCESS;
+}
+
+/* Index of the active (occupied) overlapping labels, ordered by mass and then
+ * by identifier. It replaces the linear scans that located omitted labels,
+ * i.e. active labels that are neither held by the moving vertex nor by one of
+ * its neighbours:
+ *
+ *   ascending order  (resolution > 0): the least massive omitted label is the
+ *     only omitted label that can belong to a best response (Proposition
+ *     "sparse candidate sets suffice"); ties prefer the smaller identifier,
+ *     exactly as the historical scan did;
+ *   descending order (resolution < 0): omitted gains are positive and increase
+ *     with mass, so only the most massive omitted labels can enter the first
+ *     max_memberships positions of the sorted candidate list.
+ *
+ * The index is a binary heap over label identifiers with a position map. A
+ * query walks the heap best-first with a small auxiliary heap of positions,
+ * so it visits only the labels that precede the answer (the candidates of
+ * the moving vertex) instead of every label. */
+typedef struct {
+    igraph_vector_int_t heap;   /* label identifiers in heap order */
+    igraph_vector_int_t pos;    /* heap position of each label, -1 if absent */
+    igraph_vector_int_t frontier; /* best-first traversal queue of positions */
+    const igraph_vector_t *mass;
+    igraph_bool_t descending;
+} igraph_i_leiden_overlap_label_index_t;
+
+static igraph_bool_t igraph_i_leiden_overlap_label_before(
+        const igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_integer_t a, const igraph_integer_t b) {
+    const igraph_real_t ma = VECTOR(*index->mass)[a];
+    const igraph_real_t mb = VECTOR(*index->mass)[b];
+
+    if (ma != mb) {
+        return index->descending ? ma > mb : ma < mb;
+    }
+    return a < b;
+}
+
+static void igraph_i_leiden_overlap_label_index_destroy(
+        igraph_i_leiden_overlap_label_index_t *index) {
+    igraph_vector_int_destroy(&index->frontier);
+    igraph_vector_int_destroy(&index->pos);
+    igraph_vector_int_destroy(&index->heap);
+}
+
+static igraph_error_t igraph_i_leiden_overlap_label_index_init(
+        igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_vector_t *mass,
+        const igraph_bool_t descending,
+        const igraph_integer_t cap) {
+    index->mass = mass;
+    index->descending = descending;
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->heap, 0);
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->pos, cap);
+    IGRAPH_VECTOR_INT_INIT_FINALLY(&index->frontier, 0);
+    igraph_vector_int_fill(&index->pos, -1);
+    IGRAPH_FINALLY_CLEAN(3);
+    return IGRAPH_SUCCESS;
+}
+
+/* Keep the position map addressable for every label identifier. */
+static igraph_error_t igraph_i_leiden_overlap_label_index_reserve(
+        igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_integer_t cap) {
+    const igraph_integer_t old = igraph_vector_int_size(&index->pos);
+
+    if (cap <= old) {
+        return IGRAPH_SUCCESS;
+    }
+    IGRAPH_CHECK(igraph_vector_int_resize(&index->pos, cap));
+    for (igraph_integer_t c = old; c < cap; c++) {
+        VECTOR(index->pos)[c] = -1;
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static void igraph_i_leiden_overlap_label_index_swap(
+        igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_integer_t i, const igraph_integer_t j) {
+    const igraph_integer_t ci = VECTOR(index->heap)[i];
+    const igraph_integer_t cj = VECTOR(index->heap)[j];
+
+    VECTOR(index->heap)[i] = cj;
+    VECTOR(index->heap)[j] = ci;
+    VECTOR(index->pos)[cj] = i;
+    VECTOR(index->pos)[ci] = j;
+}
+
+static void igraph_i_leiden_overlap_label_index_sift_up(
+        igraph_i_leiden_overlap_label_index_t *index, igraph_integer_t i) {
+    while (i > 0) {
+        const igraph_integer_t parent = (i - 1) / 2;
+        if (!igraph_i_leiden_overlap_label_before(index,
+                VECTOR(index->heap)[i], VECTOR(index->heap)[parent])) {
+            break;
+        }
+        igraph_i_leiden_overlap_label_index_swap(index, i, parent);
+        i = parent;
+    }
+}
+
+static void igraph_i_leiden_overlap_label_index_sift_down(
+        igraph_i_leiden_overlap_label_index_t *index, igraph_integer_t i) {
+    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
+
+    for (;;) {
+        const igraph_integer_t left = 2 * i + 1, right = left + 1;
+        igraph_integer_t best = i;
+        if (left < size && igraph_i_leiden_overlap_label_before(index,
+                VECTOR(index->heap)[left], VECTOR(index->heap)[best])) {
+            best = left;
+        }
+        if (right < size && igraph_i_leiden_overlap_label_before(index,
+                VECTOR(index->heap)[right], VECTOR(index->heap)[best])) {
+            best = right;
+        }
+        if (best == i) {
+            break;
+        }
+        igraph_i_leiden_overlap_label_index_swap(index, i, best);
+        i = best;
+    }
+}
+
+/* Rebuild the index from the token counts in O(#labels). */
+static igraph_error_t igraph_i_leiden_overlap_label_index_rebuild(
+        igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_vector_int_t *comm_tokens,
+        const igraph_integer_t nb_comm_ids) {
+    igraph_integer_t size;
+
+    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_reserve(
+        index, igraph_vector_int_size(comm_tokens)));
+    igraph_vector_int_fill(&index->pos, -1);
+    igraph_vector_int_clear(&index->heap);
+    for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
+        if (VECTOR(*comm_tokens)[c] > 0) {
+            VECTOR(index->pos)[c] = igraph_vector_int_size(&index->heap);
+            IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
+        }
+    }
+    size = igraph_vector_int_size(&index->heap);
+    for (igraph_integer_t i = size / 2 - 1; i >= 0; i--) {
+        igraph_i_leiden_overlap_label_index_sift_down(index, i);
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_error_t igraph_i_leiden_overlap_label_index_insert(
+        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = igraph_vector_int_size(&index->heap);
+
+    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_reserve(index, c + 1));
+    IGRAPH_CHECK(igraph_vector_int_push_back(&index->heap, c));
+    VECTOR(index->pos)[c] = i;
+    igraph_i_leiden_overlap_label_index_sift_up(index, i);
+    return IGRAPH_SUCCESS;
+}
+
+static void igraph_i_leiden_overlap_label_index_remove(
+        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = VECTOR(index->pos)[c];
+    const igraph_integer_t last = igraph_vector_int_size(&index->heap) - 1;
+
+    if (i < 0) {
+        return;
+    }
+    if (i != last) {
+        igraph_i_leiden_overlap_label_index_swap(index, i, last);
+    }
+    igraph_vector_int_pop_back(&index->heap);
+    VECTOR(index->pos)[c] = -1;
+    if (i != last) {
+        const igraph_integer_t moved = VECTOR(index->heap)[i];
+        igraph_i_leiden_overlap_label_index_sift_up(index, i);
+        igraph_i_leiden_overlap_label_index_sift_down(index, VECTOR(index->pos)[moved]);
+    }
+}
+
+/* Restore the heap order after the mass of an indexed label changed. */
+static void igraph_i_leiden_overlap_label_index_update(
+        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t c) {
+    const igraph_integer_t i = VECTOR(index->pos)[c];
+
+    if (i < 0) {
+        return;
+    }
+    igraph_i_leiden_overlap_label_index_sift_up(index, i);
+    igraph_i_leiden_overlap_label_index_sift_down(index, VECTOR(index->pos)[c]);
+}
+
+static igraph_bool_t igraph_i_leiden_overlap_frontier_before(
+        const igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_integer_t p, const igraph_integer_t q) {
+    return igraph_i_leiden_overlap_label_before(
+        index, VECTOR(index->heap)[p], VECTOR(index->heap)[q]);
+}
+
+static igraph_error_t igraph_i_leiden_overlap_frontier_push(
+        igraph_i_leiden_overlap_label_index_t *index, const igraph_integer_t p) {
+    igraph_integer_t i = igraph_vector_int_size(&index->frontier);
+
+    IGRAPH_CHECK(igraph_vector_int_push_back(&index->frontier, p));
+    while (i > 0) {
+        const igraph_integer_t parent = (i - 1) / 2;
+        if (!igraph_i_leiden_overlap_frontier_before(index,
+                VECTOR(index->frontier)[i], VECTOR(index->frontier)[parent])) {
+            break;
+        }
+        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
+        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[parent];
+        VECTOR(index->frontier)[parent] = tmp;
+        i = parent;
+    }
+    return IGRAPH_SUCCESS;
+}
+
+static igraph_integer_t igraph_i_leiden_overlap_frontier_pop(
+        igraph_i_leiden_overlap_label_index_t *index) {
+    const igraph_integer_t top = VECTOR(index->frontier)[0];
+    const igraph_integer_t size = igraph_vector_int_size(&index->frontier) - 1;
+    igraph_integer_t i = 0;
+
+    VECTOR(index->frontier)[0] = VECTOR(index->frontier)[size];
+    igraph_vector_int_pop_back(&index->frontier);
+    for (;;) {
+        const igraph_integer_t left = 2 * i + 1, right = left + 1;
+        igraph_integer_t best = i;
+        if (left < size && igraph_i_leiden_overlap_frontier_before(index,
+                VECTOR(index->frontier)[left], VECTOR(index->frontier)[best])) {
+            best = left;
+        }
+        if (right < size && igraph_i_leiden_overlap_frontier_before(index,
+                VECTOR(index->frontier)[right], VECTOR(index->frontier)[best])) {
+            best = right;
+        }
+        if (best == i) {
+            break;
+        }
+        const igraph_integer_t tmp = VECTOR(index->frontier)[i];
+        VECTOR(index->frontier)[i] = VECTOR(index->frontier)[best];
+        VECTOR(index->frontier)[best] = tmp;
+        i = best;
+    }
+    return top;
+}
+
+/* Start a best-first traversal that yields labels in index order. */
+static igraph_error_t igraph_i_leiden_overlap_label_index_begin(
+        igraph_i_leiden_overlap_label_index_t *index) {
+    igraph_vector_int_clear(&index->frontier);
+    if (igraph_vector_int_size(&index->heap) > 0) {
+        IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, 0));
+    }
+    return IGRAPH_SUCCESS;
+}
+
+/* Next label in index order whose marker is zero, or -1 when exhausted. */
+static igraph_error_t igraph_i_leiden_overlap_label_index_next(
+        igraph_i_leiden_overlap_label_index_t *index,
+        const igraph_vector_int_t *marker,
+        igraph_integer_t *label) {
+    const igraph_integer_t size = igraph_vector_int_size(&index->heap);
+
+    *label = -1;
+    while (igraph_vector_int_size(&index->frontier) > 0) {
+        const igraph_integer_t p = igraph_i_leiden_overlap_frontier_pop(index);
+        const igraph_integer_t c = VECTOR(index->heap)[p];
+        const igraph_integer_t left = 2 * p + 1;
+        if (left < size) {
+            IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, left));
+        }
+        if (left + 1 < size) {
+            IGRAPH_CHECK(igraph_i_leiden_overlap_frontier_push(index, left + 1));
+        }
+        if (!VECTOR(*marker)[c]) {
+            *label = c;
+            return IGRAPH_SUCCESS;
+        }
+    }
+    return IGRAPH_SUCCESS;
+}
+
 /* Rebuild the fractional community masses, token counts, and recyclable empty
  * community stack from the membership vectors. The incremental state is kept
  * for speed, but this reconciliation is the authoritative representation of
@@ -2276,10 +2616,18 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     igraph_vector_int_t comm_seen;     /* candidate-collection flags, ditto */
     igraph_vector_t inv_sqrt;          /* 1/sqrt(j) for j = 1..max_memberships */
     igraph_vector_int_t chosen;
+    igraph_i_leiden_overlap_cand_buffer_t cand_buffer = { NULL, 0 };
     igraph_i_leiden_overlap_cand_t *cand;
-    igraph_integer_t cap = 1, nb_comm_ids = 0, maxdeg = 0, cand_cap;
+    igraph_i_leiden_overlap_label_index_t label_index;
+    /* Omitted active labels are candidates when isolation is disabled and
+     * resolution * n_v > 0 (one least-massive label), or when
+     * resolution * n_v < 0 (the most massive ones). Node weights are
+     * non-negative, so the sign is the sign of the resolution. */
+    const igraph_bool_t use_label_index =
+        resolution_parameter < 0.0 || (!*allow_isolation && resolution_parameter > 0.0);
+    igraph_integer_t cap = 1, nb_comm_ids = 0, maxdeg = 0;
     igraph_integer_t label_bound, label_storage_bound;
-    igraph_integer_t neighbour_cand_bound, active_cand_bound;
+    igraph_integer_t neighbour_cand_bound;
     /* A reconciliation rebuilds every community mass from all membership
      * rows, costing O(sum_v k_v + #labels). Running it every n queue pops
      * (at least every 1024) keeps its amortized cost O(k_bar + #labels / n)
@@ -2337,9 +2685,18 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
     IGRAPH_STACK_INT_INIT_FINALLY(&empty_comms, 8);
 
+    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_init(
+        &label_index, &comm_mass, resolution_parameter < 0.0,
+        use_label_index ? cap : 0));
+    IGRAPH_FINALLY(igraph_i_leiden_overlap_label_index_destroy, &label_index);
+
     IGRAPH_CHECK(igraph_i_leiden_overlap_rebuild_bookkeeping(
         memberships, node_weights, &inv_sqrt, nb_comm_ids, &comm_mass,
         &comm_tokens, &empty_comms, false, &bookkeeping_changed));
+    if (use_label_index) {
+        IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_rebuild(
+            &label_index, &comm_tokens, nb_comm_ids));
+    }
 
     IGRAPH_BITSET_INIT_FINALLY(&node_is_stable, n);
     IGRAPH_DQUEUE_INT_INIT_FINALLY(&unstable_nodes, n);
@@ -2353,19 +2710,16 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
     IGRAPH_VECTOR_INT_INIT_FINALLY(&chosen, max_memberships);
 
-    /* Candidates per visit: own memberships, neighbour communities, and either
-     * one empty community or omitted existing communities (all of them when
-     * resolution * n_v < 0). Anonymous community IDs are bounded by the
-     * maximum possible incidence count n * max_memberships. */
-    active_cand_bound = label_storage_bound;
+    /* Candidates per visit: own memberships, neighbour communities, one empty
+     * community, and the omitted labels selected through the label index
+     * (one, or max_memberships plus rounding ties). The buffer starts at the
+     * neighbourhood bound and grows only if a visit needs more. */
     IGRAPH_SAFE_MULT(maxdeg, max_memberships, &neighbour_cand_bound);
     IGRAPH_SAFE_ADD(neighbour_cand_bound, max_memberships, &neighbour_cand_bound);
-    IGRAPH_SAFE_ADD(neighbour_cand_bound, 1, &neighbour_cand_bound);
-    cand_cap = active_cand_bound > neighbour_cand_bound
-        ? active_cand_bound : neighbour_cand_bound;
-    cand = IGRAPH_CALLOC(cand_cap, igraph_i_leiden_overlap_cand_t);
-    IGRAPH_CHECK_OOM(cand, "Insufficient memory for overlapping Leiden.");
-    IGRAPH_FINALLY(igraph_free, cand);
+    IGRAPH_SAFE_ADD(neighbour_cand_bound, 2, &neighbour_cand_bound);
+    IGRAPH_FINALLY(igraph_i_leiden_overlap_cand_buffer_destroy, &cand_buffer);
+    IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_reserve(
+        &cand_buffer, neighbour_cand_bound < 256 ? neighbour_cand_bound : 256));
 
     while (!igraph_dqueue_int_empty(&unstable_nodes)) {
         igraph_uint_t membership_hash;
@@ -2385,6 +2739,10 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
             IGRAPH_CHECK(igraph_i_leiden_overlap_rebuild_bookkeeping(
                 memberships, node_weights, &inv_sqrt, nb_comm_ids, &comm_mass,
                 &comm_tokens, &empty_comms, true, &bookkeeping_changed));
+            if (use_label_index) {
+                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_rebuild(
+                    &label_index, &comm_tokens, nb_comm_ids));
+            }
             if (bookkeeping_changed) {
                 /* A materially corrected mass state invalidates all previous
                  * stability decisions. Revisit every vertex deterministically. */
@@ -2429,12 +2787,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         for (igraph_integer_t idx = 0; idx < k; idx++) {
             igraph_integer_t c = VECTOR(*sigma)[idx];
             VECTOR(comm_seen)[c] = 1;
-            if (ncand >= cand_cap) {
-                IGRAPH_ERROR("Overlapping Leiden candidate capacity exceeded.",
-                             IGRAPH_EINTERNAL);
-            }
-            cand[ncand].comm = c;
-            ncand++;
+            IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_push(&cand_buffer, &ncand, c));
         }
 
         /* Accumulate fractional edge weights L_v^c and collect the
@@ -2457,12 +2810,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                 igraph_integer_t c = VECTOR(*sigma_u)[idx];
                 if (!VECTOR(comm_seen)[c]) {
                     VECTOR(comm_seen)[c] = 1;
-                    if (ncand >= cand_cap) {
-                        IGRAPH_ERROR("Overlapping Leiden candidate capacity exceeded.",
-                                     IGRAPH_EINTERNAL);
-                    }
-                    cand[ncand].comm = c;
-                    ncand++;
+                    IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_push(&cand_buffer, &ncand, c));
                 }
                 VECTOR(edge_w_to_comm)[c] += wf;
             }
@@ -2470,53 +2818,82 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
 
         if (empty_c >= 0 && !VECTOR(comm_seen)[empty_c]) {
             VECTOR(comm_seen)[empty_c] = 1;
-            if (ncand >= cand_cap) {
-                IGRAPH_ERROR("Overlapping Leiden candidate capacity exceeded.",
-                             IGRAPH_EINTERNAL);
-            }
-            cand[ncand].comm = empty_c;
-            ncand++;
+            IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_push(&cand_buffer, &ncand, empty_c));
         }
 
         /* Complete the non-neighbor class for a Definition-3 best response
          * (Felipe et al., Physica A 680:130989, 2025). Empty (gain 0) dominates
          * omitted communities only when resolution * n_v >= 0 and isolation is
-         * enabled. Otherwise add one extreme-mass omitted representative, or
-         * every omitted community when resolution * n_v < 0 (several positive
-         * gains may enter the best prefix). */
+         * enabled. Otherwise add the least massive omitted label
+         * (resolution * n_v > 0), or, when resolution * n_v < 0, the most
+         * massive omitted labels: their gains -resolution * n_v * mass are
+         * positive and non-increasing along the index order, so the labels
+         * that can occupy the first max_memberships sorted positions are the
+         * first max_memberships of that order plus any label whose computed
+         * gain ties the last one (rounding can merge distinct masses). */
         {
             const igraph_real_t signed_scale = resolution_parameter * nv;
             const igraph_bool_t need_omitted =
                 !*allow_isolation || signed_scale < 0.0;
 
-            if (need_omitted && signed_scale < 0.0) {
-                for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
-                    if (VECTOR(comm_tokens)[c] <= 0 || VECTOR(comm_seen)[c]) {
-                        continue;
-                    }
-                    VECTOR(comm_seen)[c] = 1;
-                    if (ncand >= cand_cap) {
-                        IGRAPH_ERROR("Overlapping Leiden candidate capacity exceeded.",
-                                     IGRAPH_EINTERNAL);
-                    }
-                    cand[ncand].comm = c;
-                    ncand++;
+            igraph_integer_t omitted;
+
+            if (need_omitted && signed_scale > 0.0) {
+                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_begin(&label_index));
+                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_next(
+                    &label_index, &comm_seen, &omitted));
+#ifndef NDEBUG
+                if (omitted != leiden_find_omitted_extreme_overlap_community(
+                        &comm_mass, &comm_tokens, &comm_seen, nb_comm_ids, nv,
+                        resolution_parameter)) {
+                    IGRAPH_ERROR("Overlapping Leiden label index disagrees with the "
+                                 "omitted-label scan.", IGRAPH_EINTERNAL);
                 }
-            } else if (need_omitted && signed_scale > 0.0) {
-                igraph_integer_t omitted = leiden_find_omitted_extreme_overlap_community(
-                    &comm_mass, &comm_tokens, &comm_seen, nb_comm_ids, nv,
-                    resolution_parameter);
+#endif
                 if (omitted >= 0) {
                     VECTOR(comm_seen)[omitted] = 1;
-                    if (ncand >= cand_cap) {
-                        IGRAPH_ERROR("Overlapping Leiden candidate capacity exceeded.",
-                                     IGRAPH_EINTERNAL);
-                    }
-                    cand[ncand].comm = omitted;
-                    ncand++;
+                    IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_push(
+                        &cand_buffer, &ncand, omitted));
                 }
+            } else if (need_omitted && signed_scale < 0.0) {
+                igraph_integer_t taken = 0;
+                igraph_real_t last_gain = 0.0;
+
+                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_begin(&label_index));
+                for (;;) {
+                    igraph_real_t gain;
+                    IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_next(
+                        &label_index, &comm_seen, &omitted));
+                    if (omitted < 0) {
+                        break;
+                    }
+                    /* Same expression as the gain computation below, whose
+                     * support term is zero for an omitted label. */
+                    gain = 0.0 - resolution_parameter * nv * VECTOR(comm_mass)[omitted];
+                    if (taken >= max_memberships && gain != last_gain) {
+                        break;
+                    }
+                    VECTOR(comm_seen)[omitted] = 1;
+                    IGRAPH_CHECK(igraph_i_leiden_overlap_cand_buffer_push(
+                        &cand_buffer, &ncand, omitted));
+                    taken++;
+                    last_gain = gain;
+                }
+#ifndef NDEBUG
+                /* Oracle: every omitted active label left out must rank
+                 * strictly after the included block. */
+                for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
+                    if (VECTOR(comm_tokens)[c] > 0 && !VECTOR(comm_seen)[c] &&
+                        (taken < max_memberships ||
+                         !(0.0 - resolution_parameter * nv * VECTOR(comm_mass)[c] < last_gain))) {
+                        IGRAPH_ERROR("Overlapping Leiden label index omitted a label that "
+                                     "can enter a best response.", IGRAPH_EINTERNAL);
+                    }
+                }
+#endif
             }
         }
+        cand = cand_buffer.data;
 
         /* Gains g_c = L_v^c - gamma n_v W_v^c, where W_v^c excludes v's own
          * mass; clear the scratch arrays along the way. */
@@ -2645,15 +3022,31 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                         if (VECTOR(comm_tokens)[c] == 0) {
                             VECTOR(comm_mass)[c] = 0.0;
                             IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, c));
+                            if (use_label_index) {
+                                igraph_i_leiden_overlap_label_index_remove(&label_index, c);
+                            }
+                        } else if (use_label_index) {
+                            igraph_i_leiden_overlap_label_index_update(&label_index, c);
                         }
                     } else if (ia >= k ||
                                VECTOR(chosen)[ib] < VECTOR(*sigma)[ia]) {
                         igraph_integer_t c = VECTOR(chosen)[ib++];
                         VECTOR(comm_mass)[c] += nv * fnew;
                         VECTOR(comm_tokens)[c] += 1;
+                        if (use_label_index) {
+                            if (VECTOR(comm_tokens)[c] == 1) {
+                                IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_insert(
+                                    &label_index, c));
+                            } else {
+                                igraph_i_leiden_overlap_label_index_update(&label_index, c);
+                            }
+                        }
                     } else {
                         igraph_integer_t c = VECTOR(*sigma)[ia];
                         VECTOR(comm_mass)[c] += nv * (fnew - fv);
+                        if (use_label_index) {
+                            igraph_i_leiden_overlap_label_index_update(&label_index, c);
+                        }
                         ia++;
                         ib++;
                     }
@@ -2729,7 +3122,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         IGRAPH_BIT_SET(node_is_stable, v);
 
         if (++iter >= (1 << 13)) {
-            /* Propagate through IGRAPH_ERROR while this frame and all eleven
+            /* Propagate through IGRAPH_ERROR while this frame and all its
              * registered temporaries are still alive. The generic limited
              * macro returns directly and would leave stale FINALLY entries. */
             if (igraph_allow_interruption()) {
@@ -2745,18 +3138,19 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         &comm_tokens, &empty_comms, true, &bookkeeping_changed));
 #endif
 
-    IGRAPH_FREE(cand);
+    igraph_i_leiden_overlap_cand_buffer_destroy(&cand_buffer);
     igraph_vector_int_destroy(&chosen);
     igraph_vector_int_destroy(&node_order);
     igraph_dqueue_int_destroy(&unstable_nodes);
     igraph_bitset_destroy(&node_is_stable);
+    igraph_i_leiden_overlap_label_index_destroy(&label_index);
     igraph_stack_int_destroy(&empty_comms);
     igraph_vector_destroy(&inv_sqrt);
     igraph_vector_int_destroy(&comm_seen);
     igraph_vector_destroy(&edge_w_to_comm);
     igraph_vector_int_destroy(&comm_tokens);
     igraph_vector_destroy(&comm_mass);
-    IGRAPH_FINALLY_CLEAN(11);
+    IGRAPH_FINALLY_CLEAN(12);
 
     return IGRAPH_SUCCESS;
 }
