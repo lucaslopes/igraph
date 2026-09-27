@@ -607,12 +607,20 @@ static igraph_error_t leiden_fastmove_vertices(
         igraph_bool_t allow_isolation,
         igraph_int_t max_total_communities,
         igraph_int_t n_communities,
+        igraph_bool_t tolerant,
         igraph_int_t *nb_clusters,
         igraph_vector_int_t *membership,
         igraph_bool_t *changed) {
 
     const igraph_int_t n = igraph_vcount(graph);
     const igraph_bool_t directed = (vertex_in_weights != NULL);
+    /* In tolerant mode (the token graph of the overlapping multilevel phase,
+     * whose weights 1/sqrt(k_u k_v) are rarely exact), gains within the
+     * numerical margin of the overlapping mover are ties, and a progress
+     * ceiling ends the proposal stage instead of cycling on rounding noise;
+     * the original-space quality guard then decides whether to keep it. */
+    const igraph_int_t progress_ceiling = igraph_i_leiden_overlap_progress_ceiling(n, 1);
+    igraph_int_t queue_pops = 0;
     const igraph_bool_t count_constrained =
         max_total_communities >= 0 || n_communities >= 0;
     /* Undirected omitted-cluster queries use a mass-ordered index of the
@@ -694,6 +702,9 @@ static igraph_error_t leiden_fastmove_vertices(
 
     /* Iterate while the queue is not empty */
     while (!igraph_dqueue_int_empty(&unstable_vertices)) {
+        if (tolerant && ++queue_pops > progress_ceiling) {
+            break;
+        }
         igraph_int_t v = igraph_dqueue_int_pop(&unstable_vertices);
         igraph_int_t best_cluster, current_cluster = VECTOR(*membership)[v];
         igraph_int_t degree;
@@ -819,7 +830,8 @@ static igraph_error_t leiden_fastmove_vertices(
             /* Only consider strictly improving moves.
              * Note that this is important in considering convergence.
              */
-            if (diff > max_diff) {
+            if (tolerant ? igraph_i_leiden_overlap_is_improvement(diff, max_diff)
+                         : diff > max_diff) {
                 best_cluster = c;
                 max_diff = diff;
             }
@@ -1473,6 +1485,7 @@ static igraph_error_t community_leiden(
         igraph_bool_t local_move_only,
         igraph_int_t max_total_communities,
         igraph_int_t n_communities,
+        igraph_bool_t tolerant,
         igraph_vector_int_t *membership,
         igraph_int_t *nb_clusters,
         igraph_real_t *quality,
@@ -1560,6 +1573,7 @@ static igraph_error_t community_leiden(
                                               allow_isolation,
                                               max_total_communities,
                                               n_communities,
+                                              tolerant,
                                               nb_clusters,
                                               i_membership,
                                               changed));
@@ -2088,6 +2102,7 @@ igraph_error_t igraph_community_leiden_with_constraints(
                                           i_edge_weights, i_vertex_out_weights, i_vertex_in_weights,
                                           resolution, beta, allow_isolation, local_move_only,
                                           max_total_communities, n_communities,
+                                          /* tolerant = */ false,
                                           mem, nb_clusters, quality, &changed));
         }
 
@@ -2106,6 +2121,7 @@ igraph_error_t igraph_community_leiden_with_constraints(
                                               resolution, beta, allow_isolation,
                                               /* local_move_only = */ true,
                                               max_total_communities, n_communities,
+                                              /* tolerant = */ false,
                                               mem, nb_clusters, quality, &changed));
             } while (changed);
         }
@@ -3860,6 +3876,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
                  &token_node_weights, NULL, resolution_parameter, beta,
                  token_allow_isolation, /* local_move_only = */ false,
                  max_total_communities, n_communities,
+                 /* tolerant = */ true,
                  &token_membership, &token_nb_clusters,
                  checkpoint ? &checkpoint->token_final_quality : NULL,
                  &inner_changed));

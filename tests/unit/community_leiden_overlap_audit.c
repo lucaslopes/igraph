@@ -164,11 +164,49 @@ static void assert_valid_cover(const igraph_vector_int_list_t *memberships,
     igraph_vector_bool_destroy(&used);
 }
 
+/* K_8 with unit weights and gamma = 1 has zero pair values, so the unit-l2
+ * potential is constant. The multilevel phase runs the disjoint mover on a
+ * token graph with weights 1/sqrt(k_u k_v); with strict floating-point
+ * comparisons, rounding noise made that mover cycle forever for about half
+ * of the seeds of this warm start. */
+static void test_zero_potential_token_stage_terminates(void) {
+    const int rows[8][6] = {
+        {4, -1}, {0, 2, 3, 4, 5, -1}, {3, -1}, {5, -1}, {0, 1, 2, 3, 4, 5},
+        {0, 2, 3, 5, -1}, {1, 2, 4, 5, -1}, {0, 1, 2, 3, 4, 5}
+    };
+    igraph_t graph;
+
+    igraph_full(&graph, 8, IGRAPH_UNDIRECTED, IGRAPH_NO_LOOPS);
+    for (igraph_int_t seed = 0; seed < 10; seed++) {
+        igraph_vector_int_list_t memberships;
+        igraph_int_t nb_clusters;
+        igraph_real_t quality;
+        igraph_vector_int_list_init(&memberships, 8);
+        for (int v = 0; v < 8; v++) {
+            for (int i = 0; i < 6 && rows[v][i] >= 0; i++) {
+                igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&memberships, v),
+                                            rows[v][i]);
+            }
+        }
+        igraph_rng_seed(igraph_rng_default(), seed);
+        IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 1.0, 0.1, 8, true, -1,
+                      true, false, NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
+        assert_valid_cover(&memberships, 8, 8, nb_clusters);
+        /* The potential is constant: -gamma/2 * sum_v w_v^2 / W = -4/28. */
+        IGRAPH_ASSERT(fabs(quality + 4.0 / 28.0) < 1e-12);
+        igraph_vector_int_list_destroy(&memberships);
+    }
+    igraph_destroy(&graph);
+    printf("Zero-potential token stage terminates: OK\n");
+}
+
 int main(void) {
     const igraph_real_t resolutions[] = { -0.4, -0.05, 0.0, 0.02, 0.1, 0.35, 1.0 };
     const igraph_int_t n_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
     igraph_int_t audited = 0, runs = 0;
     igraph_real_t worst = 0.0;
+
+    test_zero_potential_token_stage_terminates();
 
     igraph_rng_seed(igraph_rng_default(), 20260927);
 
