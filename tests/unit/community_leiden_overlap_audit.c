@@ -229,6 +229,39 @@ static void test_disjoint_zero_resolution_signed_witness(void) {
     printf("Disjoint zero-resolution signed witness: OK\n");
 }
 
+/* The diagnostic entry point recomputes every accepted move and the token
+ * identity from scratch. Those recomputations sum O(m + #labels) terms, so
+ * comparing them with a purely relative margin reported false mismatches on
+ * most seeds of the karate club. */
+static void test_diagnostic_checks_have_no_false_mismatch(void) {
+    igraph_t graph;
+
+    igraph_famous(&graph, "Zachary");
+    for (igraph_int_t seed = 0; seed < 50; seed++) {
+        igraph_vector_int_list_t memberships;
+        igraph_matrix_t moves, projections;
+        igraph_int_t nb_clusters;
+        igraph_real_t quality;
+        igraph_vector_int_list_init(&memberships, 0);
+        igraph_rng_seed(igraph_rng_default(), seed);
+        IGRAPH_ASSERT(igraph_community_leiden_with_diagnostics(
+            &graph, NULL, NULL, NULL, 0.1, 0.01, 2, false, -1, true, false,
+            &memberships, &nb_clusters, &quality, &moves, &projections) == IGRAPH_SUCCESS);
+        IGRAPH_ASSERT(igraph_matrix_nrow(&moves) > 0);
+        for (igraph_int_t row = 0; row < igraph_matrix_nrow(&moves); row++) {
+            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR) <=
+                          MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE));
+            /* The margin stays far below any genuine bookkeeping error. */
+            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE) < 1e-9);
+        }
+        igraph_matrix_destroy(&projections);
+        igraph_matrix_destroy(&moves);
+        igraph_vector_int_list_destroy(&memberships);
+    }
+    igraph_destroy(&graph);
+    printf("Diagnostic checks have no false mismatch: OK\n");
+}
+
 int main(void) {
     const igraph_real_t resolutions[] = { -0.4, -0.05, 0.0, 0.02, 0.1, 0.35, 1.0 };
     const igraph_int_t n_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -237,6 +270,7 @@ int main(void) {
 
     test_zero_potential_token_stage_terminates();
     test_disjoint_zero_resolution_signed_witness();
+    test_diagnostic_checks_have_no_false_mismatch();
 
     igraph_rng_seed(igraph_rng_default(), 20260927);
 

@@ -161,6 +161,16 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
         const igraph_real_t resolution_parameter,
         igraph_real_t *quality);
 
+static igraph_error_t igraph_i_community_leiden_overlap_quality_ext(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *node_weights,
+        igraph_vector_int_list_t *memberships,
+        const igraph_real_t resolution_parameter,
+        igraph_real_t *quality,
+        igraph_real_t *term_magnitude,
+        igraph_integer_t *term_count);
+
 /* Forward declaration for the overlapping driver. */
 static igraph_error_t igraph_i_community_leiden_run_overlapping(
         const igraph_t *graph,
@@ -3278,12 +3288,14 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
             }
 
             if (!same) {
-                igraph_real_t trace_quality_before = 0.0;
+                igraph_real_t trace_quality_before = 0.0, trace_magnitude_before = 0.0;
+                igraph_integer_t trace_terms_before = 0;
 
                 if (trace && trace->move_trace) {
-                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality_ext(
                         graph, edge_weights, node_weights, memberships,
-                        resolution_parameter, &trace_quality_before));
+                        resolution_parameter, &trace_quality_before,
+                        &trace_magnitude_before, &trace_terms_before));
                 }
 
                 *changed = true;
@@ -3342,19 +3354,27 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                 IGRAPH_CHECK(igraph_vector_int_update(sigma, &chosen));
 
                 if (trace && trace->move_trace) {
-                    igraph_real_t trace_quality_after;
+                    igraph_real_t trace_quality_after, trace_magnitude_after;
+                    igraph_integer_t trace_terms_after;
                     const igraph_real_t predicted_delta = best_score - cur_score;
                     igraph_real_t direct_delta, error, tolerance;
                     igraph_real_t values[IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH];
 
-                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+                    IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality_ext(
                         graph, edge_weights, node_weights, memberships,
-                        resolution_parameter, &trace_quality_after));
+                        resolution_parameter, &trace_quality_after,
+                        &trace_magnitude_after, &trace_terms_after));
                     direct_delta = (trace_quality_after - trace_quality_before) *
                                    trace->original_weight;
                     error = fabs(predicted_delta - direct_delta);
+                    /* The direct delta differences two recomputed sums of
+                     * O(m + #labels) terms; bound their rounding by the
+                     * recursive-summation error, on top of the relative
+                     * margin used for the incremental prediction. */
                     tolerance = igraph_i_leiden_overlap_tolerance(
-                        predicted_delta, direct_delta);
+                        predicted_delta, direct_delta) +
+                        DBL_EPSILON * ((igraph_real_t) trace_terms_before * trace_magnitude_before +
+                                       (igraph_real_t) trace_terms_after * trace_magnitude_after);
                     if (error > tolerance) {
                         IGRAPH_ERRORF(
                             "Overlapping Leiden accepted-move delta mismatch "
@@ -3510,9 +3530,27 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
         igraph_vector_int_list_t *memberships,
         const igraph_real_t resolution_parameter,
         igraph_real_t *quality) {
+    return igraph_i_community_leiden_overlap_quality_ext(
+               graph, edge_weights, node_weights, memberships,
+               resolution_parameter, quality, NULL, NULL);
+}
+
+/* As above; optionally also reports the sum of the absolute values of the
+ * unnormalized terms and their number, which bound the rounding error of the
+ * recursive summation (|error| <= count * epsilon * magnitude, Higham, Thm.
+ * 4.1) for the diagnostic comparisons. */
+static igraph_error_t igraph_i_community_leiden_overlap_quality_ext(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *node_weights,
+        igraph_vector_int_list_t *memberships,
+        const igraph_real_t resolution_parameter,
+        igraph_real_t *quality,
+        igraph_real_t *term_magnitude,
+        igraph_integer_t *term_count) {
     const igraph_integer_t n = igraph_vcount(graph);
     const igraph_integer_t m = igraph_ecount(graph);
-    igraph_real_t total_edge_weight = 0.0, q = 0.0;
+    igraph_real_t total_edge_weight = 0.0, q = 0.0, magnitude = 0.0;
     igraph_vector_t comm_mass;
     igraph_integer_t maxid = -1, id_count;
 
@@ -3546,6 +3584,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
         total_edge_weight += w;
         if (from == to) {
             q += 2 * w;
+            magnitude += fabs(2 * w);
             continue;
         }
         sig_f = igraph_vector_int_list_get_ptr(memberships, from);
@@ -3564,13 +3603,23 @@ static igraph_error_t igraph_i_community_leiden_overlap_quality(
             }
         }
         if (shared > 0) {
-            q += 2 * w * shared /
+            const igraph_real_t term = 2 * w * shared /
                  (sqrt((igraph_real_t) kf) * sqrt((igraph_real_t) kt));
+            q += term;
+            magnitude += fabs(term);
         }
     }
 
     for (igraph_integer_t c = 0; c <= maxid; c++) {
-        q -= resolution_parameter * VECTOR(comm_mass)[c] * VECTOR(comm_mass)[c];
+        const igraph_real_t term = resolution_parameter * VECTOR(comm_mass)[c] * VECTOR(comm_mass)[c];
+        q -= term;
+        magnitude += fabs(term);
+    }
+    if (term_magnitude) {
+        *term_magnitude = magnitude;
+    }
+    if (term_count) {
+        *term_count = m + maxid + 1;
     }
 
     igraph_vector_destroy(&comm_mass);
@@ -3807,6 +3856,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
     igraph_t token_graph;
     igraph_vector_t token_edge_weights, token_node_weights;
     igraph_vector_int_t token_membership, token_offset;
+    igraph_real_t local_magnitude = 0.0;
+    igraph_integer_t local_terms = 0;
 
     if (checkpoint) {
         *checkpoint = (igraph_i_leiden_overlap_checkpoint_t) {
@@ -3843,9 +3894,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
                 igraph_vector_int_list_get_ptr(local_snapshot, v),
                 igraph_vector_int_list_get_ptr(memberships, v)));
         }
-        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(
+        IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality_ext(
             graph, edge_weights, node_weights, memberships,
-            resolution_parameter, quality_after_local));
+            resolution_parameter, quality_after_local, &local_magnitude, &local_terms));
     }
 
     if (checkpoint) {
@@ -3890,9 +3941,14 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
             &checkpoint->token_initial_quality));
         checkpoint->token_initial_unnormalized =
             checkpoint->token_initial_quality * checkpoint->token_weight;
+        /* Both sides are recomputed sums over the same terms, split over
+         * original edges and labels or over token edges and clusters; bound
+         * their rounding by the recursive-summation error. */
         identity_tolerance = igraph_i_leiden_overlap_tolerance(
             checkpoint->original_unnormalized,
-            checkpoint->token_initial_unnormalized);
+            checkpoint->token_initial_unnormalized) +
+            DBL_EPSILON * local_magnitude *
+            (igraph_real_t) (local_terms + checkpoint->token_edge_count + nb_comms + 2);
         checkpoint->token_identity_abs_error = fabs(
             checkpoint->original_unnormalized -
             checkpoint->token_initial_unnormalized);
