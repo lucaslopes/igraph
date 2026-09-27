@@ -3423,10 +3423,8 @@ static igraph_int_t overlap_front_mandatory_labels(const overlap_mover_t *mover,
     }
     for (igraph_int_t i = 0; i < visit->k; i++) {
         if (VECTOR(mover->comm_tokens)[cand[i].comm] == 1) {
-            const overlap_cand_t tmp = cand[mandatory];
-            cand[mandatory] = cand[i];
+            overlap_cand_swap(cand, mandatory, i);
             cand[mandatory].gain = 0.0;
-            cand[i] = tmp;
             mandatory++;
         }
     }
