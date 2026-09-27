@@ -262,6 +262,63 @@ static void test_diagnostic_checks_have_no_false_mismatch(void) {
     printf("Diagnostic checks have no false mismatch: OK\n");
 }
 
+static igraph_int_t count_duplicate_bodies(const igraph_vector_int_list_t *memberships,
+                                           igraph_int_t nb_clusters) {
+    const igraph_int_t n = igraph_vector_int_list_size(memberships);
+    igraph_int_t duplicates = 0;
+
+    for (igraph_int_t a = 0; a < nb_clusters; a++) {
+        for (igraph_int_t b = a + 1; b < nb_clusters; b++) {
+            igraph_bool_t same = true;
+            for (igraph_int_t v = 0; v < n && same; v++) {
+                const igraph_vector_int_t *row = igraph_vector_int_list_get_ptr(memberships, v);
+                same = igraph_vector_int_contains(row, a) == igraph_vector_int_contains(row, b);
+            }
+            duplicates += same;
+        }
+    }
+    return duplicates;
+}
+
+/* Star 1-0-2 at zero resolution with two labels per vertex: local moving can
+ * reach a cover in which every vertex holds the same two labels. The token
+ * proposal merges them into one label with the same potential (a tie within
+ * the margin), which single-vertex moves cannot do. The post-local guard
+ * must keep such a tied proposal when it occupies fewer labels, and must
+ * never return less than local moving alone. */
+static void test_tied_token_proposal_merges_duplicate_labels(void) {
+    igraph_t graph;
+    igraph_int_t exercised = 0;
+
+    igraph_small(&graph, 3, IGRAPH_UNDIRECTED, 0, 1, 0, 2, -1);
+    for (igraph_int_t seed = 0; seed < 20; seed++) {
+        igraph_vector_int_list_t local, full;
+        igraph_int_t nb_local, nb_full;
+        igraph_real_t q_local, q_full;
+
+        igraph_vector_int_list_init(&local, 0);
+        igraph_vector_int_list_init(&full, 0);
+        igraph_rng_seed(igraph_rng_default(), seed);
+        IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.0, 0.01, 2, false, 1,
+                      true, true, NULL, &local, &nb_local, &q_local) == IGRAPH_SUCCESS);
+        igraph_rng_seed(igraph_rng_default(), seed);
+        IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.0, 0.01, 2, false, 2,
+                      true, false, NULL, &full, &nb_full, &q_full) == IGRAPH_SUCCESS);
+        assert_valid_cover(&full, 3, 2, nb_full);
+        IGRAPH_ASSERT(q_full >= q_local - 1e-12);
+        if (count_duplicate_bodies(&local, nb_local) > 0) {
+            exercised++;
+            IGRAPH_ASSERT(count_duplicate_bodies(&full, nb_full) == 0);
+            IGRAPH_ASSERT(nb_full < nb_local);
+        }
+        igraph_vector_int_list_destroy(&full);
+        igraph_vector_int_list_destroy(&local);
+    }
+    IGRAPH_ASSERT(exercised > 0);
+    igraph_destroy(&graph);
+    printf("Tied token proposal merges duplicate labels: OK\n");
+}
+
 int main(void) {
     const igraph_real_t resolutions[] = { -0.4, -0.05, 0.0, 0.02, 0.1, 0.35, 1.0 };
     const igraph_int_t n_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -271,6 +328,7 @@ int main(void) {
     test_zero_potential_token_stage_terminates();
     test_disjoint_zero_resolution_signed_witness();
     test_diagnostic_checks_have_no_false_mismatch();
+    test_tied_token_proposal_merges_duplicate_labels();
 
     igraph_rng_seed(igraph_rng_default(), 20260927);
 

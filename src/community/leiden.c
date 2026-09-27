@@ -3468,6 +3468,45 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
     return IGRAPH_SUCCESS;
 }
 
+/* Count the distinct community IDs of a cover without renumbering it. */
+static igraph_error_t igraph_i_community_leiden_overlap_count_labels(
+        const igraph_vector_int_list_t *memberships,
+        igraph_integer_t *count) {
+    const igraph_integer_t n = igraph_vector_int_list_size(memberships);
+    igraph_integer_t maxid = -1, id_count, distinct = 0;
+    igraph_vector_bool_t seen;
+
+    for (igraph_integer_t v = 0; v < n; v++) {
+        const igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
+        const igraph_integer_t k = igraph_vector_int_size(sigma);
+        for (igraph_integer_t idx = 0; idx < k; idx++) {
+            if (VECTOR(*sigma)[idx] > maxid) {
+                maxid = VECTOR(*sigma)[idx];
+            }
+        }
+    }
+
+    IGRAPH_SAFE_ADD(maxid, 1, &id_count);
+    IGRAPH_VECTOR_BOOL_INIT_FINALLY(&seen, id_count);
+    for (igraph_integer_t v = 0; v < n; v++) {
+        const igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
+        const igraph_integer_t k = igraph_vector_int_size(sigma);
+        for (igraph_integer_t idx = 0; idx < k; idx++) {
+            const igraph_integer_t c = VECTOR(*sigma)[idx];
+            if (!VECTOR(seen)[c]) {
+                VECTOR(seen)[c] = true;
+                distinct++;
+            }
+        }
+    }
+    *count = distinct;
+
+    igraph_vector_bool_destroy(&seen);
+    IGRAPH_FINALLY_CLEAN(1);
+
+    return IGRAPH_SUCCESS;
+}
+
 /* Renumber community IDs consecutively from 0 in order of first appearance
  * and keep each membership vector sorted. Returns the number of distinct
  * communities in nb_clusters. */
@@ -4200,6 +4239,7 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     igraph_integer_t i_nb_clusters;
     igraph_bool_t changed = true;
     igraph_real_t q_prev, q_cur;
+    igraph_integer_t tie_budget = n;  /* tied proposals kept per call */
     const igraph_bool_t quality_guard = !local_move_only;
     igraph_vector_int_list_t previous_memberships;
     igraph_i_leiden_overlap_trace_t trace_context;
@@ -4347,10 +4387,28 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
                     graph, i_edge_weights, i_node_weights, memberships,
                     resolution_parameter, &q_cur));
             }
-            /* Keep the token proposal only if it improves the state produced
-             * by this iteration's local moving; otherwise restore that state,
-             * which keeps the local improvement, and end the iterations. */
-            if (!igraph_i_leiden_overlap_is_improvement(q_cur, q_local)) {
+            /* Keep the token proposal if it improves the state produced by
+             * this iteration's local moving. Also keep a proposal that does
+             * not lower the recomputed quality at all (it lies within the
+             * margin, so it is not an improvement) but occupies strictly
+             * fewer labels: token projection merges duplicate community
+             * bodies, which single-vertex moves cannot merge. Every kept
+             * proposal therefore raises the quality beyond the margin or
+             * keeps it and removes a label, so the iterations cannot cycle.
+             * Otherwise restore the local-moving state, which keeps the
+             * local improvement, and end the iterations. */
+            igraph_bool_t keep = igraph_i_leiden_overlap_is_improvement(q_cur, q_local);
+            if (!keep && tie_budget > 0 &&
+                !igraph_i_leiden_overlap_is_improvement(q_local, q_cur)) {
+                igraph_integer_t labels_proposed, labels_local;
+                IGRAPH_CHECK(igraph_i_community_leiden_overlap_count_labels(
+                                 memberships, &labels_proposed));
+                IGRAPH_CHECK(igraph_i_community_leiden_overlap_count_labels(
+                                 &previous_memberships, &labels_local));
+                keep = labels_proposed < labels_local;
+                tie_budget -= keep;
+            }
+            if (!keep) {
                 for (igraph_integer_t v = 0; v < n; v++) {
                     IGRAPH_CHECK(igraph_vector_int_update(
                         igraph_vector_int_list_get_ptr(memberships, v),
