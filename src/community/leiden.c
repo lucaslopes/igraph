@@ -2517,12 +2517,14 @@ igraph_error_t igraph_community_leiden_simple(
  * constant independent of the membership vector).
  *
  * Why the L2 normalization 1/sqrt(k) instead of the L1 dilution 1/k?
- * Under L1, a node's total contribution to Q is the *mean* of its
- * per-community alignment values, and a mean is always maximized by the
- * single best element: every best response collapses to one membership and
- * the model provably degenerates to the disjoint case. L2 is the minimal
- * concavification that (a) keeps kappa <= 1, (b) preserves the exact
- * reduction to CPM on disjoint covers, and (c) admits strictly profitable
+ * Under L1 the pairwise contribution of a node is a mean of alignment
+ * values, but its diagonal crowding term (n_v f_v^c)^2 then depends on the
+ * cardinality, so best responses do not generally collapse to a single
+ * membership: an isolated node with gamma > 0 prefers two private labels
+ * (-gamma/4) to one (-gamma/2). L2 is an explicit model choice that (a)
+ * keeps kappa <= 1, (b) makes the diagonal term constant, so the exact
+ * potential holds and reduces to CPM on disjoint covers, and (c) admits
+ * strictly profitable
  * overlap: a second membership pays iff its alignment value exceeds
  * (sqrt(2)-1) times the first, a structural entry hurdle.
  *
