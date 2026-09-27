@@ -1,0 +1,4 @@
+Constraint input contract: OK
+Non-binding bound reproduces the unconstrained call: OK
+Multilevel count witness: OK
+Exhaustive constrained-equilibrium audit: OK

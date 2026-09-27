@@ -255,6 +255,25 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden(
         igraph_int_t *nb_clusters,
         igraph_real_t *quality);
 
+IGRAPH_EXPORT igraph_error_t igraph_community_leiden_with_constraints(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *vertex_out_weights,
+        const igraph_vector_t *vertex_in_weights,
+        igraph_real_t resolution,
+        igraph_real_t beta,
+        igraph_int_t max_memberships,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
+        igraph_bool_t start,
+        igraph_int_t n_iterations,
+        igraph_bool_t allow_isolation,
+        igraph_bool_t local_move_only,
+        igraph_vector_int_t *membership,
+        igraph_vector_int_list_t *memberships,
+        igraph_int_t *nb_clusters,
+        igraph_real_t *quality);
+
 /** Columns returned by the opt-in overlapping Leiden accepted-move trace. */
 typedef enum {
     IGRAPH_LEIDEN_OVERLAP_MOVE_SEQUENCE = 0,

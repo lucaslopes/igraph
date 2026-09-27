@@ -1799,6 +1799,20 @@ igraph_community_leiden:
         OUT INTEGER nb_clusters, OUT REAL quality
     DEPS: weights ON graph, vertex_out_weights ON graph, vertex_in_weights ON graph
 
+igraph_community_leiden_with_constraints:
+    PARAMS: |-
+        GRAPH graph, OPTIONAL EDGE_WEIGHTS weights,
+        OPTIONAL VERTEX_WEIGHTS vertex_out_weights,
+        OPTIONAL VERTEX_WEIGHTS vertex_in_weights,
+        REAL resolution, REAL beta=0.01, INTEGER max_memberships=1,
+        INTEGER max_total_communities=-1, INTEGER n_communities=-1,
+        BOOLEAN start=False, INTEGER n_iterations=2,
+        BOOLEAN allow_isolation=True, BOOLEAN local_move_only=False,
+        OPTIONAL INOUT VECTOR_INT membership,
+        OPTIONAL INOUT VECTOR_INT_LIST memberships,
+        OUT INTEGER nb_clusters, OUT REAL quality
+    DEPS: weights ON graph, vertex_out_weights ON graph, vertex_in_weights ON graph
+
 igraph_community_leiden_with_diagnostics:
     PARAMS: |-
         GRAPH graph, OPTIONAL EDGE_WEIGHTS weights,

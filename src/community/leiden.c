@@ -169,6 +169,8 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         igraph_real_t resolution_parameter,
         igraph_real_t beta,
         igraph_int_t max_memberships,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
         igraph_bool_t start,
         igraph_int_t n_iterations,
         igraph_bool_t allow_isolation,
@@ -316,12 +318,17 @@ static igraph_error_t leiden_fastmove_vertices(
         const igraph_vector_t *vertex_in_weights,
         const igraph_real_t resolution,
         igraph_bool_t allow_isolation,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
         igraph_int_t *nb_clusters,
         igraph_vector_int_t *membership,
         igraph_bool_t *changed) {
 
     const igraph_int_t n = igraph_vcount(graph);
     const igraph_bool_t directed = (vertex_in_weights != NULL);
+    const igraph_bool_t count_constrained =
+        max_total_communities >= 0 || n_communities >= 0;
+    igraph_int_t occupied_clusters = 0;
     igraph_dqueue_int_t unstable_vertices;
     igraph_real_t max_diff, diff;
     igraph_bitset_t neighbor_cluster_added, vertex_is_stable;
@@ -332,6 +339,7 @@ static igraph_error_t leiden_fastmove_vertices(
     igraph_vector_int_t nb_vertices_per_cluster;
     igraph_stack_int_t empty_clusters;
     igraph_int_t c, nb_neigh_clusters;
+    igraph_bool_t fresh_offered;
     int iter = 0;
 
     /* Initialize queue of unstable vertices and whether vertex is stable. Only
@@ -370,6 +378,8 @@ static igraph_error_t leiden_fastmove_vertices(
     for (c = 0; c < n; c++) {
         if (VECTOR(nb_vertices_per_cluster)[c] == 0) {
             IGRAPH_CHECK(igraph_stack_int_push(&empty_clusters, c));
+        } else {
+            occupied_clusters++;
         }
     }
 
@@ -394,6 +404,7 @@ static igraph_error_t leiden_fastmove_vertices(
         }
         VECTOR(nb_vertices_per_cluster)[current_cluster]--;
         if (VECTOR(nb_vertices_per_cluster)[current_cluster] == 0) {
+            occupied_clusters--;
             IGRAPH_CHECK(igraph_stack_int_push(&empty_clusters, current_cluster));
         }
 
@@ -403,8 +414,12 @@ static igraph_error_t leiden_fastmove_vertices(
          *   resolution * n_v < 0 also the extreme-mass omitted community
          *   (empty gain 0 no longer dominates positive omitted gains);
          * allow_isolation = false -> neighbor communities plus one
-         *   extreme-mass omitted active community. */
-        if (allow_isolation) {
+         *   extreme-mass omitted active community.
+         * An exact community count never offers an empty community, and an
+         * upper bound offers one only while fewer clusters are occupied. */
+        fresh_offered = allow_isolation && n_communities < 0 &&
+            (max_total_communities < 0 || occupied_clusters < max_total_communities);
+        if (fresh_offered) {
             c = igraph_stack_int_top(&empty_clusters);
             VECTOR(neighbor_clusters)[0] = c;
             IGRAPH_BIT_SET(neighbor_cluster_added, c);
@@ -435,8 +450,13 @@ static igraph_error_t leiden_fastmove_vertices(
                 resolution * VECTOR(*vertex_out_weights)[v];
             /* Empty (mass 0) dominates omitted non-neighbors only when
              * signed_scale >= 0. Otherwise add the extreme-mass omitted
-             * active community to complete the best-response set. */
-            if (!allow_isolation || signed_scale < 0.0) {
+             * active community to complete the best-response set. When a
+             * count constraint withholds the empty community, a vertex that
+             * was alone in its cluster still has that zero-gain option;
+             * otherwise the omitted community is needed as well. */
+            if (!allow_isolation || signed_scale < 0.0 ||
+                (count_constrained && !fresh_offered &&
+                 VECTOR(nb_vertices_per_cluster)[current_cluster] > 0)) {
                 igraph_int_t omitted = leiden_find_omitted_extreme_cluster(
                     &cluster_out_weights,
                     directed ? &cluster_in_weights : NULL,
@@ -483,7 +503,16 @@ static igraph_error_t leiden_fastmove_vertices(
             IGRAPH_BIT_CLEAR(neighbor_cluster_added, c);
         }
 
+        /* An exact community count forbids emptying a cluster: the last
+         * vertex of a cluster keeps it. */
+        if (n_communities >= 0 && VECTOR(nb_vertices_per_cluster)[current_cluster] == 0) {
+            best_cluster = current_cluster;
+        }
+
         /* Move vertex to best cluster */
+        if (VECTOR(nb_vertices_per_cluster)[best_cluster] == 0) {
+            occupied_clusters++;
+        }
         VECTOR(cluster_out_weights)[best_cluster] += VECTOR(*vertex_out_weights)[v];
         if (directed) {
             VECTOR(cluster_in_weights)[best_cluster] += VECTOR(*vertex_in_weights)[v];
@@ -515,6 +544,11 @@ static igraph_error_t leiden_fastmove_vertices(
     }
 
     IGRAPH_CHECK(igraph_reindex_membership(membership, NULL, nb_clusters));
+    if ((max_total_communities >= 0 && *nb_clusters > max_total_communities) ||
+        (n_communities >= 0 && *nb_clusters != n_communities)) {
+        IGRAPH_ERROR("Leiden local moving violated a community-count constraint.",
+                     IGRAPH_EINTERNAL);
+    }
 
     igraph_vector_int_destroy(&neighbor_clusters);
     igraph_bitset_destroy(&neighbor_cluster_added);
@@ -1105,6 +1139,8 @@ static igraph_error_t community_leiden(
         igraph_real_t beta,
         igraph_bool_t allow_isolation,
         igraph_bool_t local_move_only,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
         igraph_vector_int_t *membership,
         igraph_int_t *nb_clusters,
         igraph_real_t *quality,
@@ -1190,6 +1226,8 @@ static igraph_error_t community_leiden(
                                               i_vertex_out_weights, i_vertex_in_weights,
                                               resolution,
                                               allow_isolation,
+                                              max_total_communities,
+                                              n_communities,
                                               nb_clusters,
                                               i_membership,
                                               changed));
@@ -1478,7 +1516,8 @@ static igraph_error_t community_leiden(
  *
  * \sa \ref igraph_community_leiden_simple() for a simplified interface
  * that allows specifying an objective function directly and does not require
- * vertex weights.
+ * vertex weights; \ref igraph_community_leiden_with_constraints() for
+ * global community-count constraints.
  *
  * \example examples/simple/igraph_community_leiden.c
  */
@@ -1498,6 +1537,75 @@ igraph_error_t igraph_community_leiden(
         igraph_vector_int_list_t *memberships,
         igraph_int_t *nb_clusters,
         igraph_real_t *quality) {
+    return igraph_community_leiden_with_constraints(
+               graph, edge_weights, vertex_out_weights, vertex_in_weights,
+               resolution, beta, max_memberships,
+               /* max_total_communities = */ -1, /* n_communities = */ -1,
+               start, n_iterations, allow_isolation, local_move_only,
+               membership, memberships, nb_clusters, quality);
+}
+
+/**
+ * \function igraph_community_leiden_with_constraints
+ * \brief Leiden algorithm with global community-count constraints.
+ *
+ * This function has the parameters and semantics of
+ * \ref igraph_community_leiden(), plus two optional constraints on the number
+ * of occupied communities (communities with at least one member) of every
+ * state visited by local moving, including every aggregate level of the
+ * multilevel phase and every token level of the overlapping multilevel phase.
+ * Distinct communities with identical member sets count separately.
+ *
+ * </para><para>
+ * With \p max_total_communities set, at most that many communities are
+ * occupied: a new (empty) community is offered to a moving vertex only while
+ * fewer communities are occupied. With \p n_communities set, exactly that
+ * many communities are occupied: no community is created and the last member
+ * of a community keeps it. In both cases the local mover also considers the
+ * least massive omitted community whenever the constraint withholds the empty
+ * community, so a completed sweep is a best response over the feasible
+ * unilateral actions. For covers with an exact count, labels held by the
+ * moving vertex alone are retained and the remaining labels are chosen by the
+ * usual sorted-prefix rule. The resulting states are constrained unilateral
+ * equilibria: the feasible deviations of a vertex depend on the others.
+ *
+ * </para><para>
+ * Without a start state, a feasible start is built deterministically: with a
+ * target K (the exact count, otherwise an upper bound smaller than the vertex
+ * count) vertex v starts in community v mod K; an exact count K larger than
+ * the vertex count (covers only) starts from singleton rows and assigns the
+ * remaining labels round-robin, which requires K <= n * max_memberships. A
+ * supplied start state that violates a constraint is rejected, not repaired.
+ *
+ * \param max_total_communities Upper bound on occupied communities; a
+ *    negative value disables it and zero is invalid.
+ * \param n_communities Exact number of occupied communities; a negative
+ *    value disables it and zero is invalid. It must not exceed
+ *    \p max_total_communities when both are set, must not exceed the vertex
+ *    count for partitions, and must not exceed n * max_memberships for covers.
+ *
+ * See \ref igraph_community_leiden() for the remaining parameters.
+ *
+ * \return Error code: \c IGRAPH_EINVAL for invalid or infeasible constraints.
+ */
+igraph_error_t igraph_community_leiden_with_constraints(
+        const igraph_t *graph,
+        const igraph_vector_t *edge_weights,
+        const igraph_vector_t *vertex_out_weights,
+        const igraph_vector_t *vertex_in_weights,
+        igraph_real_t resolution,
+        igraph_real_t beta,
+        igraph_int_t max_memberships,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
+        igraph_bool_t start,
+        igraph_int_t n_iterations,
+        igraph_bool_t allow_isolation,
+        igraph_bool_t local_move_only,
+        igraph_vector_int_t *membership,
+        igraph_vector_int_list_t *memberships,
+        igraph_int_t *nb_clusters,
+        igraph_real_t *quality) {
 
     const igraph_int_t vcount = igraph_vcount(graph);
     const igraph_int_t ecount = igraph_ecount(graph);
@@ -1505,6 +1613,19 @@ igraph_error_t igraph_community_leiden(
 
     if (max_memberships < 1) {
         IGRAPH_ERROR("max_memberships must be at least 1.", IGRAPH_EINVAL);
+    }
+    if (max_total_communities < 0) {
+        max_total_communities = -1;
+    }
+    if (n_communities < 0) {
+        n_communities = -1;
+    }
+    if (max_total_communities == 0 || n_communities == 0) {
+        IGRAPH_ERROR("Community-count constraints must be positive (or negative to disable them).",
+                     IGRAPH_EINVAL);
+    }
+    if (max_total_communities > 0 && n_communities > max_total_communities) {
+        IGRAPH_ERROR("n_communities must not exceed max_total_communities.", IGRAPH_EINVAL);
     }
 
     if (max_memberships == 1) {
@@ -1546,6 +1667,32 @@ igraph_error_t igraph_community_leiden(
                 }
             } else {
                 IGRAPH_CHECK(igraph_vector_int_range(membership, 0, vcount));
+            }
+        }
+
+        if (max_total_communities > 0 || n_communities > 0) {
+            igraph_int_t initial_clusters;
+            if (n_communities > vcount) {
+                IGRAPH_ERROR("n_communities must not exceed the number of vertices for a partition.",
+                             IGRAPH_EINVAL);
+            }
+            if (!start) {
+                const igraph_int_t target = n_communities > 0 ? n_communities :
+                                            max_total_communities < vcount ? max_total_communities : vcount;
+                for (igraph_int_t v = 0; v < vcount; v++) {
+                    VECTOR(*mem)[v] = v % target;
+                }
+            }
+            if (vcount > 0 && igraph_vector_int_min(mem) < 0) {
+                IGRAPH_ERROR("Initial membership labels must be non-negative.", IGRAPH_EINVAL);
+            }
+            IGRAPH_CHECK(igraph_reindex_membership(mem, NULL, &initial_clusters));
+            if (max_total_communities > 0 && initial_clusters > max_total_communities) {
+                IGRAPH_ERROR("Initial membership exceeds max_total_communities.", IGRAPH_EINVAL);
+            }
+            if (n_communities > 0 && initial_clusters != n_communities) {
+                IGRAPH_ERROR("Initial membership does not contain exactly n_communities communities.",
+                             IGRAPH_EINVAL);
             }
         }
 
@@ -1608,6 +1755,7 @@ igraph_error_t igraph_community_leiden(
             IGRAPH_CHECK(community_leiden(graph,
                                           i_edge_weights, i_vertex_out_weights, i_vertex_in_weights,
                                           resolution, beta, allow_isolation, local_move_only,
+                                          max_total_communities, n_communities,
                                           mem, nb_clusters, quality, &changed));
         }
 
@@ -1625,6 +1773,7 @@ igraph_error_t igraph_community_leiden(
                                               i_edge_weights, i_vertex_out_weights, i_vertex_in_weights,
                                               resolution, beta, allow_isolation,
                                               /* local_move_only = */ true,
+                                              max_total_communities, n_communities,
                                               mem, nb_clusters, quality, &changed));
             } while (changed);
         }
@@ -1668,7 +1817,9 @@ igraph_error_t igraph_community_leiden(
         IGRAPH_UNUSED(membership);
         return igraph_i_community_leiden_run_overlapping(
                    graph, edge_weights, vertex_out_weights,
-                   resolution, beta, max_memberships, start, n_iterations,
+                   resolution, beta, max_memberships,
+                   max_total_communities, n_communities,
+                   start, n_iterations,
                    allow_isolation, local_move_only,
                    memberships, nb_clusters, quality,
                    /*move_trace=*/ NULL, /*projection_trace=*/ NULL);
@@ -1736,7 +1887,8 @@ igraph_error_t igraph_community_leiden_with_diagnostics(
 
     IGRAPH_CHECK(igraph_i_community_leiden_run_overlapping(
         graph, edge_weights, vertex_out_weights, resolution, beta,
-        max_memberships, start, n_iterations, allow_isolation,
+        max_memberships, /* max_total_communities = */ -1,
+        /* n_communities = */ -1, start, n_iterations, allow_isolation,
         local_move_only, memberships, nb_clusters, quality,
         move_trace, projection_trace));
 
@@ -2601,6 +2753,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         const igraph_real_t resolution_parameter,
         const igraph_bool_t *allow_isolation,
         const igraph_integer_t max_memberships,
+        const igraph_integer_t max_total_communities,
+        const igraph_integer_t n_communities,
         igraph_vector_int_list_t *memberships,
         igraph_bool_t *changed,
         igraph_i_leiden_overlap_trace_t *trace) {
@@ -2623,8 +2777,14 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
      * resolution * n_v > 0 (one least-massive label), or when
      * resolution * n_v < 0 (the most massive ones). Node weights are
      * non-negative, so the sign is the sign of the resolution. */
+    const igraph_bool_t count_constrained =
+        max_total_communities > 0 || n_communities > 0;
     const igraph_bool_t use_label_index =
-        resolution_parameter < 0.0 || (!*allow_isolation && resolution_parameter > 0.0);
+        resolution_parameter < 0.0 ||
+        ((!*allow_isolation || count_constrained) && resolution_parameter > 0.0);
+    /* Number of labels with at least one member, maintained for the count
+     * constraints. */
+    igraph_integer_t occupied_comms = 0;
     igraph_integer_t cap = 1, nb_comm_ids = 0, maxdeg = 0;
     igraph_integer_t label_bound, label_storage_bound;
     igraph_integer_t neighbour_cand_bound;
@@ -2697,6 +2857,11 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_rebuild(
             &label_index, &comm_tokens, nb_comm_ids));
     }
+    for (igraph_integer_t c = 0; c < nb_comm_ids; c++) {
+        if (VECTOR(comm_tokens)[c] > 0) {
+            occupied_comms++;
+        }
+    }
 
     IGRAPH_BITSET_INIT_FINALLY(&node_is_stable, n);
     IGRAPH_DQUEUE_INT_INIT_FINALLY(&unstable_nodes, n);
@@ -2759,14 +2924,17 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         igraph_real_t nv = VECTOR(*node_weights)[v];
         igraph_real_t fv = VECTOR(inv_sqrt)[k];
         igraph_vector_int_t *edges;
-        igraph_integer_t degree, ncand = 0, empty_c = -1, best_j = 0, jmax;
+        igraph_integer_t degree, ncand = 0, empty_c = -1, best_j = 0, jmax, mandatory;
         igraph_real_t cur_score = 0.0, best_score, prefix;
 
         /* Keep one recyclable empty community available as a candidate,
          * unless isolation moves are disallowed; this subsumes isolation
          * moves (their gain is exactly 0). empty_c stays -1, a value no
-         * real community ID ever takes, when allow_isolation is false. */
-        if (*allow_isolation) {
+         * real community ID ever takes, when allow_isolation is false.
+         * An exact community count never offers an empty community, and an
+         * upper bound offers one only while fewer labels are occupied. */
+        if (*allow_isolation && n_communities <= 0 &&
+            (max_total_communities <= 0 || occupied_comms < max_total_communities)) {
             if (igraph_stack_int_empty(&empty_comms)) {
                 igraph_integer_t needed;
                 IGRAPH_SAFE_ADD(nb_comm_ids, 1, &needed);
@@ -2833,10 +3001,23 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
          * gain ties the last one (rounding can merge distinct masses). */
         {
             const igraph_real_t signed_scale = resolution_parameter * nv;
-            const igraph_bool_t need_omitted =
+            igraph_bool_t need_omitted =
                 !*allow_isolation || signed_scale < 0.0;
-
             igraph_integer_t omitted;
+
+            /* A count constraint may withhold the empty label. A label held
+             * by v alone has the same zero gain, and either dominates every
+             * omitted label (non-positive gain); without one, the least
+             * massive omitted label completes the candidate set. */
+            if (!need_omitted && count_constrained && empty_c < 0 && signed_scale > 0.0) {
+                need_omitted = true;
+                for (igraph_integer_t idx = 0; idx < k; idx++) {
+                    if (VECTOR(comm_tokens)[VECTOR(*sigma)[idx]] == 1) {
+                        need_omitted = false;
+                        break;
+                    }
+                }
+            }
 
             if (need_omitted && signed_scale > 0.0) {
                 IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_begin(&label_index));
@@ -2922,9 +3103,26 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
          * sorting only the positive candidates, or only the best candidate
          * when none is positive, selects the same response as sorting them
          * all, while avoiding the sort of the usually long non-positive tail. */
+        /* An exact community count forbids emptying a label, so every label
+         * held by v alone is mandatory. Such a label has zero gain (no other
+         * vertex supports it or carries its mass); record it exactly. The
+         * same dominance argument then applies to the optional labels: with
+         * mandatory labels present, a non-positive optional gain never helps. */
+        mandatory = 0;
+        if (n_communities > 0) {
+            for (igraph_integer_t i = 0; i < k; i++) {
+                if (VECTOR(comm_tokens)[cand[i].comm] == 1) {
+                    const igraph_i_leiden_overlap_cand_t tmp = cand[mandatory];
+                    cand[mandatory] = cand[i];
+                    cand[mandatory].gain = 0.0;
+                    cand[i] = tmp;
+                    mandatory++;
+                }
+            }
+        }
         {
-            igraph_integer_t npos = 0;
-            for (igraph_integer_t i = 0; i < ncand; i++) {
+            igraph_integer_t npos = mandatory;
+            for (igraph_integer_t i = mandatory; i < ncand; i++) {
                 if (cand[i].gain > 0.0) {
                     const igraph_i_leiden_overlap_cand_t tmp = cand[npos];
                     cand[npos] = cand[i];
@@ -2944,7 +3142,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                 cand[best_i] = tmp;
                 npos = 1;
             }
-            qsort(cand, (size_t) npos, sizeof(*cand), igraph_i_leiden_overlap_cand_cmp);
+            qsort(cand + mandatory, (size_t) (npos - mandatory), sizeof(*cand),
+                  igraph_i_leiden_overlap_cand_cmp);
             jmax = npos < max_memberships ? npos : max_memberships;
         }
 
@@ -2958,6 +3157,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         for (igraph_integer_t j = 1; j <= jmax; j++) {
             igraph_real_t score;
             prefix += cand[j - 1].gain;
+            if (j < mandatory) {
+                continue;
+            }
             score = prefix * VECTOR(inv_sqrt)[j];
             if (igraph_i_leiden_overlap_is_improvement(score, best_score)) {
                 best_score = score;
@@ -3021,6 +3223,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                         VECTOR(comm_tokens)[c] -= 1;
                         if (VECTOR(comm_tokens)[c] == 0) {
                             VECTOR(comm_mass)[c] = 0.0;
+                            occupied_comms--;
                             IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, c));
                             if (use_label_index) {
                                 igraph_i_leiden_overlap_label_index_remove(&label_index, c);
@@ -3033,6 +3236,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
                         igraph_integer_t c = VECTOR(chosen)[ib++];
                         VECTOR(comm_mass)[c] += nv * fnew;
                         VECTOR(comm_tokens)[c] += 1;
+                        if (VECTOR(comm_tokens)[c] == 1) {
+                            occupied_comms++;
+                        }
                         if (use_label_index) {
                             if (VECTOR(comm_tokens)[c] == 1) {
                                 IGRAPH_CHECK(igraph_i_leiden_overlap_label_index_insert(
@@ -3137,6 +3343,11 @@ static igraph_error_t igraph_i_community_leiden_overlap_fastmovenodes(
         memberships, node_weights, &inv_sqrt, nb_comm_ids, &comm_mass,
         &comm_tokens, &empty_comms, true, &bookkeeping_changed));
 #endif
+    if ((max_total_communities > 0 && occupied_comms > max_total_communities) ||
+        (n_communities > 0 && occupied_comms != n_communities)) {
+        IGRAPH_ERROR("Overlapping Leiden local moving violated a community-count constraint.",
+                     IGRAPH_EINTERNAL);
+    }
 
     igraph_i_leiden_overlap_cand_buffer_destroy(&cand_buffer);
     igraph_vector_int_destroy(&chosen);
@@ -3497,6 +3708,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
         const igraph_real_t resolution_parameter,
         const igraph_real_t beta,
         const igraph_integer_t max_memberships,
+        const igraph_integer_t max_total_communities,
+        const igraph_integer_t n_communities,
         const igraph_bool_t *allow_isolation,
         const igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships,
@@ -3529,7 +3742,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
     IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_node);
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_fastmovenodes(graph, &edges_per_node,
                  edge_weights, node_weights, resolution_parameter, allow_isolation,
-                 max_memberships, memberships, &phase_changed, trace));
+                 max_memberships, max_total_communities, n_communities,
+                 memberships, &phase_changed, trace));
     igraph_inclist_destroy(&edges_per_node);
     IGRAPH_FINALLY_CLEAN(1);
 
@@ -3595,6 +3809,7 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
     IGRAPH_CHECK(community_leiden(&token_graph, &token_edge_weights,
                  &token_node_weights, NULL, resolution_parameter, beta,
                  token_allow_isolation, /* local_move_only = */ false,
+                 max_total_communities, n_communities,
                  &token_membership, &token_nb_clusters,
                  checkpoint ? &checkpoint->token_final_quality : NULL,
                  &inner_changed));
@@ -3628,7 +3843,8 @@ static igraph_error_t igraph_i_community_leiden_overlap_iteration(
 /* Validate and clean up a user-supplied initial cover for the overlapping
  * algorithm ("start" mode): every membership vector must be non-empty, its
  * entries must be valid vertex indices, and it must not exceed \p
- * max_memberships once duplicates are removed. Each vector is sorted and
+ * max_memberships once duplicates are removed, and labels must lie below the
+ * anonymous label bound n * max_memberships. Each vector is sorted and
  * deduplicated in place so that it satisfies the invariant relied upon by
  * igraph_i_community_leiden_overlap_fastmovenodes. Community IDs themselves are
  * compacted separately by the caller, via
@@ -3637,6 +3853,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_validate_start(
         const igraph_integer_t n,
         const igraph_integer_t max_memberships,
         igraph_vector_int_list_t *memberships) {
+    igraph_integer_t label_bound;
+
+    IGRAPH_SAFE_MULT(n, max_memberships, &label_bound);
     for (igraph_integer_t v = 0; v < n; v++) {
         igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
         igraph_integer_t k = igraph_vector_int_size(sigma);
@@ -3666,9 +3885,9 @@ static igraph_error_t igraph_i_community_leiden_overlap_validate_start(
                          IGRAPH_EINVAL);
         }
 
-        if (VECTOR(*sigma)[0] < 0 || VECTOR(*sigma)[k - 1] >= n) {
+        if (VECTOR(*sigma)[0] < 0 || VECTOR(*sigma)[k - 1] >= label_bound) {
             IGRAPH_ERROR("Initial overlapping membership indices must be non-negative "
-                         "and less than the number of vertices.", IGRAPH_EINVAL);
+                         "and less than n * max_memberships.", IGRAPH_EINVAL);
         }
     }
 
@@ -3803,7 +4022,10 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         const igraph_t *graph,
         const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
-        const igraph_integer_t max_memberships, const igraph_bool_t start,
+        const igraph_integer_t max_memberships,
+        const igraph_integer_t max_total_communities,
+        const igraph_integer_t n_communities,
+        const igraph_bool_t start,
         const igraph_integer_t n_iterations,
         const igraph_bool_t allow_isolation, const igraph_bool_t local_move_only,
         igraph_vector_int_list_t *memberships, igraph_integer_t *nb_clusters,
@@ -3835,6 +4057,14 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     if (start && igraph_vector_int_list_size(memberships) != n) {
         IGRAPH_ERROR("Initial membership list length does not equal the number of vertices.",
                      IGRAPH_EINVAL);
+    }
+    if (n_communities > 0) {
+        igraph_integer_t incidence_bound;
+        IGRAPH_SAFE_MULT(n, max_memberships, &incidence_bound);
+        if (n_communities > incidence_bound) {
+            IGRAPH_ERROR("n_communities exceeds n * max_memberships, the largest number of "
+                         "communities a cover can occupy.", IGRAPH_EINVAL);
+        }
     }
 
     if (!edge_weights) {
@@ -3876,12 +4106,36 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_validate_start(n, max_memberships, memberships));
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, nb_clusters));
     } else {
-        /* Start from the singleton cover: node v belongs to community v only. */
+        /* Start from the singleton cover (node v belongs to community v
+         * only), or from a deterministic feasible cover for a count
+         * constraint: with a target K <= n, vertex v starts in label v mod K;
+         * an exact K > n adds labels n..K-1 round-robin to singleton rows,
+         * which the check above keeps within the per-vertex cap. */
+        const igraph_integer_t target = n_communities > 0 ? n_communities :
+            (max_total_communities > 0 && max_total_communities < n) ? max_total_communities : n;
         IGRAPH_CHECK(igraph_vector_int_list_resize(memberships, n));
         for (igraph_integer_t v = 0; v < n; v++) {
             igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
             IGRAPH_CHECK(igraph_vector_int_resize(sigma, 1));
-            VECTOR(*sigma)[0] = v;
+            VECTOR(*sigma)[0] = target < n ? v % target : v;
+        }
+        for (igraph_integer_t c = n; c < target; c++) {
+            IGRAPH_CHECK(igraph_vector_int_push_back(
+                igraph_vector_int_list_get_ptr(memberships, (c - n) % n), c));
+        }
+        if (target != n) {
+            IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, nb_clusters));
+        }
+    }
+    if (max_total_communities > 0 || n_communities > 0) {
+        igraph_integer_t initial_labels;
+        IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, &initial_labels));
+        if (max_total_communities > 0 && initial_labels > max_total_communities) {
+            IGRAPH_ERROR("Initial cover exceeds max_total_communities.", IGRAPH_EINVAL);
+        }
+        if (n_communities > 0 && initial_labels != n_communities) {
+            IGRAPH_ERROR("Initial cover does not contain exactly n_communities labels.",
+                         IGRAPH_EINVAL);
         }
     }
 
@@ -3920,6 +4174,7 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
         changed = false;
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_iteration(graph, i_edge_weights,
                      i_node_weights, resolution_parameter, beta, max_memberships,
+                     max_total_communities, n_communities,
                      &allow_isolation, local_move_only, memberships, &changed,
                      trace, checkpoint_ptr));
         if (quality_guard) {
@@ -4026,6 +4281,7 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
             IGRAPH_CHECK(igraph_i_community_leiden_overlap_fastmovenodes(
                 graph, &edges_per_node, i_edge_weights, i_node_weights,
                 resolution_parameter, &allow_isolation, max_memberships,
+                max_total_communities, n_communities,
                 memberships, &changed, trace));
             certificate_sweep++;
         } while (changed);
@@ -4034,6 +4290,11 @@ static igraph_error_t igraph_i_community_leiden_run_overlapping(
     }
 
     IGRAPH_CHECK(igraph_i_community_leiden_overlap_compact(memberships, nb_clusters));
+    if ((max_total_communities > 0 && *nb_clusters > max_total_communities) ||
+        (n_communities > 0 && *nb_clusters != n_communities)) {
+        IGRAPH_ERROR("Overlapping Leiden returned a cover that violates a community-count "
+                     "constraint.", IGRAPH_EINTERNAL);
+    }
 
     if (quality) {
         IGRAPH_CHECK(igraph_i_community_leiden_overlap_quality(graph, i_edge_weights,
