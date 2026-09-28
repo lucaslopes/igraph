@@ -2,9 +2,17 @@
 
 ## [1.0.0.5] - unreleased (lucas-igraph development line)
 
+### Breaking changes
+
+- `igraph_community_leiden()` has the signature and semantics of igraph 1.0.0 again: `(graph, edge_weights, vertex_out_weights, vertex_in_weights, resolution, beta, start, n_iterations, membership, nb_clusters, quality)`, a disjoint partition, moves to one empty cluster allowed, the complete multilevel algorithm, and the igraph 1.0.0 candidate set. The 15-argument form of lucas-igraph 1.0.0.1-1.0.0.4 is gone; its `max_memberships`, `allow_isolation`, `local_move_only` and `memberships` arguments are available through `igraph_community_leiden_with_constraints()` (pass `-1, -1` for the count limits). Callers must be rebuilt; the library soname is unchanged.
+- `igraph_community_leiden_with_diagnostics()` takes the arguments of `igraph_community_leiden_with_constraints()` followed by three optional outputs, `move_trace`, `projection_trace` and `counters`, of which at least one must be requested. It accepts partitions and covers, with or without count limits.
+- The accepted-move trace appends `LEVEL`, `OCCUPIED_BEFORE` and `OCCUPIED_AFTER` (width 12 -> 15). The column enum is now `igraph_leiden_move_trace_column_t` with `IGRAPH_LEIDEN_MOVE_*` names; the `IGRAPH_LEIDEN_OVERLAP_MOVE_*` names remain as aliases.
+
 ### Added
 
-- `igraph_community_leiden_with_constraints()` adds two optional global limits on the number of occupied communities to `igraph_community_leiden()`: `max_total_communities` (at most K) and `n_communities` (exactly K), for partitions and overlapping covers. They hold in every local-moving, aggregate and token level; infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`. `igraph_community_leiden()` keeps its ABI.
+- `igraph_community_leiden_with_constraints()` is the extended Leiden interface: overlapping covers (`max_memberships > 1`), `allow_isolation`, `local_move_only`, and two optional global limits on the number of occupied communities, `max_total_communities` (at most K) and `n_communities` (exactly K), for partitions and covers. The limits hold in every local-moving, aggregate and token level; infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`.
+- Leiden diagnostics for partitions: the accepted-move trace records every move of the disjoint local mover on every aggregation level, compares its predicted objective change with a direct recomputation within a stated rounding bound, and reports the aggregation level and the number of occupied clusters before and after each move.
+- A compact counter output (`igraph_leiden_counter_t`, schema `IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION` = 3) with the call's mode and count limits, iterations, certificate sweeps, aggregate levels, visits split into accepted moves and rejected visits, overlapping proposals split by the guard's decision, and trace row counts. Recording never influences the computation.
 
 ### Changed
 
@@ -15,18 +23,19 @@
 - Projection diagnostics append `labels_local` and `labels_proposed` to the
   previous 19 columns, reporting proposed counts before rollback. Consumers
   can now check both the fewer-label tie condition and its per-call budget.
+- The overlapping path rejects a non-NULL `membership` vector (the result is the `memberships` cover), and its directed-graph and in-weight errors name `max_memberships`.
 
 ### Fixed
 
 - The overlapping multilevel token stage could cycle forever on rounding noise when pair values tie exactly (for example a complete graph with unit weights and resolution 1).
-- `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget on the disjoint path.
-- The disjoint local mover now offers an omitted cluster at zero resolution with signed edge weights and isolation disabled.
+- `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget; it now reports the renumbered start partition and its quality.
+- The extended disjoint local mover now offers an omitted cluster at zero resolution with signed edge weights and isolation disabled.
 - The diagnostic checks of `igraph_community_leiden_with_diagnostics()` no longer report false mismatches caused by summation rounding.
 - The Leiden multilevel driver now writes the last aggregation level back to the original vertices when that level's local moving moved anything. Earlier releases (including upstream igraph) dropped those moves, which with signed edge weights could make `n_iterations < 0` loop forever.
 - The disjoint local mover reports an interruption through the error-unwinding stack instead of returning with live cleanup entries.
-- Signed disjoint node weights no longer hide an improving omitted cluster
-  when isolation is enabled at positive resolution; directed in/out weights
-  are covered as well.
+- In the extended interface, signed disjoint node weights no longer hide an
+  improving omitted cluster when isolation is enabled at positive
+  resolution; directed in/out weights are covered as well.
 - An overlapping label held by the moving vertex alone contributes exactly
   zero to its current score, avoiding self-penalty cancellation that could
   hide an improving exact-count response with large node weights.
