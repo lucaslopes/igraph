@@ -68,9 +68,9 @@
  *       zero-initializes it, registers *_destroy once on igraph's FINALLY
  *       stack, and then calls *_init; every *_destroy is safe on a partially
  *       initialized workspace. This keeps error unwinding in one place.
- *     - Floating-point expressions that decide moves are kept exactly as in
- *       earlier releases, statement by statement: splitting or reordering
- *       them changes floating-point contraction and therefore results.
+ *     - Floating-point expressions that decide moves are written statement
+ *       by statement on purpose: splitting or reordering them changes
+ *       floating-point contraction and therefore results.
  *     - Error messages are part of the observable contract; changes to them
  *       are listed in the changelog.
  *
@@ -133,7 +133,7 @@
  *
  *   Section 5  Public API
  *     5.1  Dispatch and mode validation
- *     5.2  igraph_community_leiden (the fork-base 1.0.0 interface)
+ *     5.2  igraph_community_leiden (the igraph 1.0.0 interface)
  *     5.3  igraph_community_leiden_with_constraints (the extended interface)
  *     5.4  igraph_community_leiden_with_diagnostics
  *     5.5  igraph_community_leiden_simple
@@ -346,7 +346,7 @@ static igraph_error_t leiden_trace_append(igraph_matrix_t *trace, const igraph_r
  *   ascending order  (gamma * vertex weight > 0): the least massive omitted
  *     label is the only omitted label that can belong to a best response
  *     (Proposition "sparse candidate sets suffice"); ties prefer the smaller
- *     identifier, as the historical scans did;
+ *     identifier, as a linear scan in identifier order would;
  *   descending order (gamma * vertex weight < 0): omitted gains are positive
  *     and grow with mass, so only the most massive omitted labels can enter a
  *     best response (the disjoint mover takes one, the overlapping mover the
@@ -1127,7 +1127,7 @@ static void leiden_mover_clear_candidates(leiden_mover_t *mover) {
 
 /* Gain of keeping v in its current cluster c (v already removed from c).
  * The directed penalty lists its two terms in the opposite order from the
- * candidate gain below; both orders are kept exactly as released, because
+ * candidate gain below; both orders are kept deliberately, because
  * floating-point contraction makes them differ in the last bit. */
 static igraph_real_t leiden_mover_gain_of_current(const leiden_mover_t *mover,
                                                   igraph_int_t v, igraph_int_t c) {
@@ -2886,7 +2886,7 @@ static igraph_int_t overlap_shared_labels(const igraph_vector_int_t *a,
  *
  * The three floating-point loops below -- label masses, edge support and
  * crowding -- deliberately stay in this one function with local
- * accumulators, exactly as released. The compiler decides per loop whether
+ * accumulators, deliberately. The compiler decides per loop whether
  * to fuse multiply-adds and how to vectorize (the released arm64 build fuses
  * the crowding term only outside its four-way unrolled body), so moving a
  * loop into a helper changes the last bits of the quality. Those bits matter:
@@ -3035,8 +3035,8 @@ static void overlap_cand_swap(overlap_cand_t *cand, igraph_int_t i, igraph_int_t
 }
 
 /* A growable candidate array. It starts at the neighbourhood bound and
- * grows only when a visit needs more room (earlier releases reserved
- * n * max_memberships + 1 entries per call). */
+ * grows only when a visit needs more room, instead of reserving
+ * n * max_memberships + 1 entries per call. */
 typedef struct {
     overlap_cand_t *data;
     igraph_int_t capacity;
@@ -4723,7 +4723,8 @@ static igraph_error_t overlap_certificate_sweeps(const overlap_run_t *run) {
  * edge, finite non-negative edge weights with a positive total, finite
  * non-negative node weights, a finite resolution and 0 <= beta < infinity;
  * max_memberships <= n. Magnitude checks reject inputs whose objective
- * arithmetic could overflow. The disjoint path keeps its historical contract.
+ * arithmetic could overflow. The disjoint path keeps the igraph 1.0.0 input
+ * contract.
  */
 
 /* Graph shape and scalar parameters. */
@@ -5141,7 +5142,7 @@ static igraph_error_t overlap_leiden_run(const igraph_t *graph,
  *
  * The four entry points share one private dispatcher (Section 5.1):
  *
- *   igraph_community_leiden()                   the fork-base igraph 1.0.0
+ *   igraph_community_leiden()                   the igraph 1.0.0
  *       interface, unchanged: a disjoint partition, moves to empty clusters
  *       allowed, the complete multilevel algorithm;
  *   igraph_community_leiden_with_constraints()  the extended interface:
@@ -5149,11 +5150,12 @@ static igraph_error_t overlap_leiden_run(const igraph_t *graph,
  *       community-count limits;
  *   igraph_community_leiden_with_diagnostics()  the extended interface plus
  *       the diagnostic outputs of Section 1.4, in both modes;
- *   igraph_community_leiden_simple()            the fork-base interface with
+ *   igraph_community_leiden_simple()            the igraph 1.0.0 interface with
  *       vertex weights derived from an objective function.
  *
- * Fork-only controls enter only through the two extended entry points; the
- * fork-base symbols keep their 1.0.0 signatures and behaviour.
+ * Overlapping, isolation, phase, count-limit and diagnostic controls enter
+ * only through the two extended entry points; the igraph 1.0.0 symbols keep
+ * their signatures and behaviour.
  */
 
 /* -----------------------------------------------------------------------------

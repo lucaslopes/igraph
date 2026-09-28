@@ -27,7 +27,7 @@
 #include <float.h>
 #include <math.h>
 
-/* Unified public API: max_memberships=1 is disjoint, >1 is overlapping. */
+/* Extended entry points: max_memberships=1 is disjoint, >1 is overlapping. */
 #define TOL (1e-15)
 
 void run_leiden_CPM(const igraph_t *graph, const igraph_vector_t *edge_weights, const igraph_real_t resolution) {
@@ -995,8 +995,8 @@ static void test_positive_budget_original_quality_guard(void) {
             igraph_vector_int_list_get_ptr(&memberships, v)) == IGRAPH_SUCCESS);
     }
 
-    /* This fixed seed made the unguarded 1.0.0.3 path decrease the original
-     * unnormalized potential from 0.39814623902049906 to 0.35. The guard
+    /* With this fixed seed an unguarded token proposal would decrease the
+     * original unnormalized potential from 0.39814623902049906 to 0.35. The guard
      * compares the token proposal with the cover reached by the iteration's
      * local moving and restores that cover on rejection, so the result is
      * exactly a local-moving-only iteration from the same seed, and never
@@ -1054,7 +1054,7 @@ static void test_overlapping_diagnostic_trace(void) {
         &move_trace, &projection_trace, /* counters */ NULL) == IGRAPH_SUCCESS);
 
     IGRAPH_ASSERT(igraph_matrix_ncol(&move_trace) ==
-                  IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH);
+                  IGRAPH_LEIDEN_MOVE_TRACE_WIDTH);
     IGRAPH_ASSERT(igraph_matrix_ncol(&projection_trace) ==
                   IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH);
     IGRAPH_ASSERT(igraph_matrix_nrow(&move_trace) > 0);
@@ -1062,17 +1062,17 @@ static void test_overlapping_diagnostic_trace(void) {
 
     for (igraph_integer_t row = 0; row < igraph_matrix_nrow(&move_trace); row++) {
         IGRAPH_ASSERT(MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA) > 0.0);
+                             IGRAPH_LEIDEN_MOVE_PREDICTED_DELTA) > 0.0);
         IGRAPH_ASSERT(MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA) > 0.0);
+                             IGRAPH_LEIDEN_MOVE_DIRECT_DELTA) > 0.0);
         IGRAPH_ASSERT(MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR) <=
+                             IGRAPH_LEIDEN_MOVE_ABS_ERROR) <=
                       MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE));
+                             IGRAPH_LEIDEN_MOVE_TOLERANCE));
         IGRAPH_ASSERT(MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER) >=
+                             IGRAPH_LEIDEN_MOVE_QUALITY_AFTER) >=
                       MATRIX(move_trace, row,
-                             IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE));
+                             IGRAPH_LEIDEN_MOVE_QUALITY_BEFORE));
     }
 
     for (igraph_integer_t row = 0; row < igraph_matrix_nrow(&projection_trace); row++) {
@@ -1443,9 +1443,9 @@ int main(void) {
     test_overlapping_trace_label_counts();
     test_overlapping_interrupt_unwind();
 
-    /* Overlapping Leiden via the unified public API. Each call reseeds the
+    /* Overlapping Leiden via the extended entry point. Each call reseeds the
      * RNG so that these tests are self-contained and do not perturb the
-     * shared RNG stream relied upon by the (unseeded) legacy comparisons. */
+     * shared RNG stream relied upon by the (unseeded) comparisons above. */
 
     /* Zachary Karate club: with max_memberships=1 through the list form
      * (memberships-only), quality must coincide with the disjoint CPM

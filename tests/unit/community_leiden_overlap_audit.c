@@ -274,12 +274,12 @@ static void test_disjoint_signed_node_weight_witness(void) {
 }
 
 /* Vertex 0 alone holds labels 0 and 1. Their true gains are exactly zero,
- * but subtracting then adding its large self penalty used to leave a
+ * but subtracting then adding its large self penalty would leave a
  * positive rounding residual in its current score. Under exact K=3, the
  * best response retains those labels and also joins label 2: its utility
  * increases from zero to 1/sqrt(3). The edge of weight 100 keeps vertices
  * 1 and 2 in label 2. Computing utility directly from the other rows avoids
- * the cancellation that caused the defect. */
+ * that cancellation. */
 static void test_exclusive_label_current_score_is_zero(void) {
     const igraph_real_t edge_values[] = {1.0, 100.0};
     const igraph_real_t node_values[] = {1e8, 0.0, 0.0};
@@ -341,10 +341,10 @@ static void test_diagnostic_checks_have_no_false_mismatch(void) {
             &memberships, &nb_clusters, &quality, &moves, &projections, /* counters */ NULL) == IGRAPH_SUCCESS);
         IGRAPH_ASSERT(igraph_matrix_nrow(&moves) > 0);
         for (igraph_int_t row = 0; row < igraph_matrix_nrow(&moves); row++) {
-            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR) <=
-                          MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE));
+            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_MOVE_ABS_ERROR) <=
+                          MATRIX(moves, row, IGRAPH_LEIDEN_MOVE_TOLERANCE));
             /* The margin stays far below any genuine bookkeeping error. */
-            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE) < 1e-9);
+            IGRAPH_ASSERT(MATRIX(moves, row, IGRAPH_LEIDEN_MOVE_TOLERANCE) < 1e-9);
         }
         igraph_matrix_destroy(&projections);
         igraph_matrix_destroy(&moves);

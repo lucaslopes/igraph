@@ -376,7 +376,7 @@ static void check_cell(const instance_t *inst, igraph_int_t seed) {
     VERIFY_FINALLY_STACK();
 }
 
-/* ---- (1) the fork-base entry point -------------------------------------- */
+/* ---- (1) the igraph 1.0.0 entry point -------------------------------------- */
 
 static void test_base_equals_extended_defaults(void) {
     static const igraph_int_t budgets[] = {0, 1, 2, -1};
@@ -424,7 +424,7 @@ static void test_base_equals_extended_defaults(void) {
     IGRAPH_ASSERT(cells == 160);
     IGRAPH_ASSERT(equal_cells > 60);
     IGRAPH_ASSERT(completed_cells > 0);
-    printf("fork-base igraph_community_leiden equals the extended defaults: OK\n");
+    printf("igraph 1.0.0 igraph_community_leiden equals the extended defaults: OK\n");
 }
 
 static void test_base_argument_errors(void) {
@@ -462,7 +462,7 @@ static void test_base_argument_errors(void) {
     igraph_destroy(&directed);
     igraph_destroy(&graph);
     VERIFY_FINALLY_STACK();
-    printf("fork-base igraph_community_leiden argument errors: OK\n");
+    printf("igraph 1.0.0 igraph_community_leiden argument errors: OK\n");
 }
 
 /* ---- (2) the compatibility matrix --------------------------------------- */

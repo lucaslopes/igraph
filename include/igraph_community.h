@@ -272,16 +272,13 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden_with_constraints(
 /**
  * Layout version of the diagnostic outputs of
  * igraph_community_leiden_with_diagnostics(): the columns of the move and
- * projection traces and the indices of the counter vector. Version 3
- * (1.0.0.5) traces partitions and covers, appends the level and
- * occupied-community columns to the move trace, and adds the counters.
+ * projection traces and the indices of the counter vector. A layout change
+ * always takes a new number; numbers are never reused.
  */
 #define IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION 3
 
 /** Columns of the accepted-move trace of
- * igraph_community_leiden_with_diagnostics(), for partitions and covers.
- * The last three columns were appended in 1.0.0.5 (width 12 -> 15); all
- * preceding column indices retain their original meanings. */
+ * igraph_community_leiden_with_diagnostics(), for partitions and covers. */
 typedef enum {
     IGRAPH_LEIDEN_MOVE_SEQUENCE = 0,
     IGRAPH_LEIDEN_MOVE_STAGE,
@@ -300,22 +297,6 @@ typedef enum {
     IGRAPH_LEIDEN_MOVE_OCCUPIED_AFTER,
     IGRAPH_LEIDEN_MOVE_TRACE_WIDTH
 } igraph_leiden_move_trace_column_t;
-
-/* The names of 1.0.0.4, when only covers were traced. */
-typedef igraph_leiden_move_trace_column_t igraph_leiden_overlap_move_trace_column_t;
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_SEQUENCE IGRAPH_LEIDEN_MOVE_SEQUENCE
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_STAGE IGRAPH_LEIDEN_MOVE_STAGE
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_VERTEX IGRAPH_LEIDEN_MOVE_VERTEX
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_BEFORE IGRAPH_LEIDEN_MOVE_CARDINALITY_BEFORE
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_AFTER IGRAPH_LEIDEN_MOVE_CARDINALITY_AFTER
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA IGRAPH_LEIDEN_MOVE_PREDICTED_DELTA
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA IGRAPH_LEIDEN_MOVE_DIRECT_DELTA
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR IGRAPH_LEIDEN_MOVE_ABS_ERROR
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE IGRAPH_LEIDEN_MOVE_TOLERANCE
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE IGRAPH_LEIDEN_MOVE_QUALITY_BEFORE
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER IGRAPH_LEIDEN_MOVE_QUALITY_AFTER
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_ORIGINAL_WEIGHT IGRAPH_LEIDEN_MOVE_ORIGINAL_WEIGHT
-#define IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH IGRAPH_LEIDEN_MOVE_TRACE_WIDTH
 
 /** Indices of the counter vector of
  * igraph_community_leiden_with_diagnostics(). */
@@ -339,9 +320,8 @@ typedef enum {
     IGRAPH_LEIDEN_COUNTER_WIDTH
 } igraph_leiden_counter_t;
 
-/** Columns returned by the opt-in overlapping Leiden projection trace.
- * The label-count columns were appended in 1.0.0.5 (width 19 -> 21);
- * all preceding column indices retain their original meanings. */
+/** Columns of the overlapping multilevel projection trace of
+ * igraph_community_leiden_with_diagnostics(). */
 typedef enum {
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_ITERATION = 0,
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_WEIGHT,

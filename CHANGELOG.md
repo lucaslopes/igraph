@@ -1,48 +1,30 @@
 # igraph C library changelog
 
-## [1.0.0.5] - unreleased (lucas-igraph development line)
+## [1.0.0.5] - lucas-igraph
 
-### Breaking changes
-
-- `igraph_community_leiden()` has the signature and semantics of igraph 1.0.0 again: `(graph, edge_weights, vertex_out_weights, vertex_in_weights, resolution, beta, start, n_iterations, membership, nb_clusters, quality)`, a disjoint partition, moves to one empty cluster allowed, the complete multilevel algorithm, and the igraph 1.0.0 candidate set. The 15-argument form of lucas-igraph 1.0.0.1-1.0.0.4 is gone; its `max_memberships`, `allow_isolation`, `local_move_only` and `memberships` arguments are available through `igraph_community_leiden_with_constraints()` (pass `-1, -1` for the count limits). Callers must be rebuilt; the library soname is unchanged.
-- `igraph_community_leiden_with_diagnostics()` takes the arguments of `igraph_community_leiden_with_constraints()` followed by three optional outputs, `move_trace`, `projection_trace` and `counters`, of which at least one must be requested. It accepts partitions and covers, with or without count limits.
-- The accepted-move trace appends `LEVEL`, `OCCUPIED_BEFORE` and `OCCUPIED_AFTER` (width 12 -> 15). The column enum is now `igraph_leiden_move_trace_column_t` with `IGRAPH_LEIDEN_MOVE_*` names; the `IGRAPH_LEIDEN_OVERLAP_MOVE_*` names remain as aliases.
+This release extends the Leiden implementation of igraph 1.0.0 with
+overlapping communities, global community-count limits, and diagnostics.
+`igraph_community_leiden()` and `igraph_community_leiden_simple()` keep the
+igraph 1.0.0 signatures and semantics; every new control is reached through
+two additional entry points.
 
 ### Added
 
-- `igraph_community_leiden_with_constraints()` is the extended Leiden interface: overlapping covers (`max_memberships > 1`), `allow_isolation`, `local_move_only`, and two optional global limits on the number of occupied communities, `max_total_communities` (at most K) and `n_communities` (exactly K), for partitions and covers. The limits hold in every local-moving, aggregate and token level; infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`.
-- Leiden diagnostics for partitions: the accepted-move trace records every move of the disjoint local mover on every aggregation level, compares its predicted objective change with a direct recomputation within a stated rounding bound, and reports the aggregation level and the number of occupied clusters before and after each move.
-- A compact counter output (`igraph_leiden_counter_t`, schema `IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION` = 3) with the call's mode and count limits, iterations, certificate sweeps, aggregate levels, visits split into accepted moves and rejected visits, overlapping proposals split by the guard's decision, and trace row counts. Recording never influences the computation.
-
-### Changed
-
-- Overlapping Leiden local moving is several times faster on large graphs: mass reconciliation runs every `max(1024, n)` queue pops instead of every 1024, the duplicate final certificate sweep of local-moving-only runs is skipped, only positive candidate gains are sorted, and omitted labels are found through a mass-ordered index instead of a scan over all labels. The disjoint local mover uses the same index for undirected graphs. Returned covers can differ from 1.0.0.4 where ties are resolved by label identifiers.
-- The overlapping candidate buffer is sized from the neighbourhood and grows on demand instead of reserving `n * max_memberships + 1` entries per call.
-- Overlapping multilevel proposals are compared with the cover reached by the same iteration's local moving, which is restored on rejection. A proposal within the numerical margin of that cover is kept when it occupies fewer labels, at most `n` times per call. The rule checks occupied counts, not equality of community bodies; deleting duplicate bodies is not generally potential-neutral.
-- Start labels of overlapping covers may lie below `n * max_memberships` (previously below `n`).
-- Projection diagnostics append `labels_local` and `labels_proposed` to the
-  previous 19 columns, reporting proposed counts before rollback. Consumers
-  can now check both the fewer-label tie condition and its per-call budget.
-- The overlapping path rejects a non-NULL `membership` vector (the result is the `memberships` cover), and its directed-graph and in-weight errors name `max_memberships`.
+- `igraph_community_leiden_with_constraints()` is the extended Leiden interface. `max_memberships > 1` computes an overlapping cover returned in `memberships`: a vertex that holds `k` communities takes part in each with intensity `1/sqrt(k)`, and local moving computes an exact best-response set of communities under the resulting unit-l2 CPM potential, which equals the CPM quality on partitions. Multilevel runs refine and aggregate a token graph with one vertex per (vertex, community) pair and keep a projected proposal only if it does not lower the original-graph quality beyond a numerical margin (a bounded number of label-reducing ties per call). `allow_isolation` controls moves to empty communities and `local_move_only` skips refinement and aggregation. With a negative iteration budget the run ends with local-moving sweeps that certify, up to floating-point tolerance, that no vertex has an improving unilateral change.
+- Global community-count limits for partitions and covers: `max_total_communities` (at most K occupied communities) and `n_communities` (exactly K), enforced at every local-moving, aggregate and token level. Infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`, never repaired; without a start state a deterministic feasible start is built.
+- `igraph_community_leiden_with_diagnostics()` runs the same computation with optional outputs: an accepted-move trace (partitions on every aggregation level, and covers) that checks each predicted change of the objective against a direct recomputation and records level and occupied-community counts; a projection trace for overlapping multilevel proposals; and a compact counter vector (`igraph_leiden_counter_t`, layout `IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION`). Recording never influences the result.
+- Overlapping inputs are validated (undirected loopless graphs, finite non-negative weights with a positive total, finite resolution and `beta`, `max_memberships` at most the vertex count, overflow-safe token expansion), and cross-mode errors name `max_memberships`.
 
 ### Fixed
 
-- The overlapping multilevel token stage could cycle forever on rounding noise when pair values tie exactly (for example a complete graph with unit weights and resolution 1).
+- The Leiden multilevel driver wrote a level's clustering back to the original vertices only when a coarser level followed, so moves made by the last level's local moving were dropped while the iteration reported a change; with `n_iterations < 0` this could loop forever (for example with signed edge weights). The last level is now written back when it moved.
 - `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget; it now reports the renumbered start partition and its quality.
-- The extended disjoint local mover now offers an omitted cluster at zero resolution with signed edge weights and isolation disabled.
-- The diagnostic checks of `igraph_community_leiden_with_diagnostics()` no longer report false mismatches caused by summation rounding.
-- The Leiden multilevel driver now writes the last aggregation level back to the original vertices when that level's local moving moved anything. Earlier releases (including upstream igraph) dropped those moves, which with signed edge weights could make `n_iterations < 0` loop forever.
-- The disjoint local mover reports an interruption through the error-unwinding stack instead of returning with live cleanup entries.
-- In the extended interface, signed disjoint node weights no longer hide an
-  improving omitted cluster when isolation is enabled at positive
-  resolution; directed in/out weights are covered as well.
-- An overlapping label held by the moving vertex alone contributes exactly
-  zero to its current score, avoiding self-penalty cancellation that could
-  hide an improving exact-count response with large node weights.
+- The disjoint local mover now unwinds interruptions through the error-cleanup stack instead of returning with live cleanup entries.
+- Building an incidence list (`igraph_inclist_init()` and the functions that use it) now unwinds an interruption through the error-cleanup stack, releasing its partial allocations.
 
 ### Other
 
-- `src/community/leiden.c` is reorganized into documented sections with a table of contents and small single-purpose functions. The reorganization alone is bit-identical to the preceding development build on 50,000 randomized instances; the separately listed correctness fixes can change trajectories.
+- `src/community/leiden.c` is organized into documented sections with a table of contents and small single-purpose functions.
 
 ## [1.0.0]
 
@@ -222,16 +204,8 @@ This section lists API-breaking changes in this version, and provides guidance o
 - `igraph_beta_weighted_gabriel_graph()` computes a Gabriel graph of a spatial point set, along with a threshold β value for each edge, at which the edge ceases to be part of the lune-based β-skeleton (experimental function). Thanks to Arnór Friðriksson @Zepeacedust for implementing this in #2827!
 - `igraph_spatial_edge_lengths()` computes edge lengths based on spatial vertex coordinates (experimental function).
 - `igraph_community_leiden_simple()` is a simplified interface to `igraph_community_leiden()` that allows selecting the objective function to maximize directly.
-- `igraph_community_leiden()` is the single public Leiden entry point for both disjoint and overlapping clustering. Mode is selected by `max_memberships`: `1` runs the classical disjoint algorithm into a membership vector; values greater than 1 run overlapping Leiden-CPM into a memberships list.
-- `igraph_community_leiden_with_diagnostics()` is an opt-in, bounded-validation interface for overlapping Leiden that records accepted-move delta checks and token-projection normalization, collision, and guard traces.
 - `igraph_vector_difference_and_intersection_sorted()` calculates the intersection and the differences of two vectors simultaneously.
 - `IGRAPH_UNLIMITED`, defined to `-1`, is a convenience constant for use with various "size limit" parameters, such as number of cliques returned, maximum path length, number of results returned, etc. It indicates that no limit should be used.
-- The following functions are not experimental any more: `igraph_count_loops()`, `igraph_count_reachable()`, `igraph_degree_correlation_vector`, `igraph_distances_cutoff()`, `igraph_distances_floyd_warshall()`, `igraph_distances_dijkstra_cutoff()`, `igraph_ecc()`, `igraph_enter_safelocale()`, `igraph_exit_safelocale()`, `igraph_feedback_vertex_set()`, `igraph_find_cycle()`, `igraph_get_shortest_path_astar()`, `igraph_graph_power()`,  `igraph_hexagonal_lattice()`,  `igraph_hypercube()`, `igraph_is_bipartite_coloring()`, `igraph_is_clique()`, `igraph_is_complete()`, `igraph_is_edge_coloring()`, `igraph_is_vertex_coloring()`,  `igraph_is_independent_vertex_set()`, `igraph_join()`,`igraph_joint_degree_distribution()`, `igraph_joint_degree_matrix()`, `igraph_joint_type_distribution()`, `igraph_layout_align()`, `igraph_layout_merge_dla()`, `igraph_mean_degree()`, `igraph_radius()`, `igraph_realize_bipartite_degree_sequence()`, `igraph_reachability()`, `igraph_transitive_closure()`, `igraph_tree_from_parent_vector()`, `igraph_triangular_lattice()`, `igraph_vector_intersection_size_sorted()`, `igraph_voronoi()`.
- - `igraph_layout_align()` attempts to align a graph layout with the coordinate axes in a visually pleasing manner (experimental function).
- - `igraph_product()` supports the lexicographic and strong graph products. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2772!
- - `igraph_mycielskian()` and `igraph_mycielski_graph()` compute a Mycielski transformation of a graph, and a Mycielski graph, respectively. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2741!
- - `igraph_path_graph()` is a convenience wrapper for `igraph_ring()` with `circular=false`.
- - `igraph_cycle_graph()` is a convenience wrapper for `igraph_ring()` with `circular=true`.
 
 ### Changed
 
@@ -247,6 +221,10 @@ This section lists API-breaking changes in this version, and provides guidance o
 - `igraph_vector_append()`, `igraph_strvector_append()` and `igraph_vector_ptr_append()` now use a different allocation strategy: if the `to` vector has insufficient capacity, they double its capacity. Previously they reserved precisely as much capacity as needed for appending the `from` vector.
 - The implementation of the Infomap algorithm behind `igraph_community_infomap()` has been updated with a more recent version (2.8.0). Isolated vertices are now supported.
 - `igraph_vector_difference_sorted()` now handles multisets properly (and documents how the multiplicities are handled).
+
+### Finalized experimental functions
+
+- The following functions are not experimental any more: `igraph_count_loops()`, `igraph_count_reachable()`, `igraph_degree_correlation_vector`, `igraph_distances_cutoff()`, `igraph_distances_floyd_warshall()`, `igraph_distances_dijkstra_cutoff()`, `igraph_ecc()`, `igraph_enter_safelocale()`, `igraph_exit_safelocale()`, `igraph_feedback_vertex_set()`, `igraph_find_cycle()`, `igraph_get_shortest_path_astar()`, `igraph_graph_power()`,  `igraph_hexagonal_lattice()`,  `igraph_hypercube()`, `igraph_is_bipartite_coloring()`, `igraph_is_clique()`, `igraph_is_complete()`, `igraph_is_edge_coloring()`, `igraph_is_vertex_coloring()`,  `igraph_is_independent_vertex_set()`, `igraph_join()`,`igraph_joint_degree_distribution()`, `igraph_joint_degree_matrix()`, `igraph_joint_type_distribution()`, `igraph_layout_align()`, `igraph_layout_merge_dla()`, `igraph_mean_degree()`, `igraph_radius()`, `igraph_realize_bipartite_degree_sequence()`, `igraph_reachability()`, `igraph_transitive_closure()`, `igraph_tree_from_parent_vector()`, `igraph_triangular_lattice()`, `igraph_vector_intersection_size_sorted()`, `igraph_voronoi()`.
 
 ### Fixed
 
