@@ -1091,7 +1091,7 @@ static void test_overlapping_diagnostic_trace(void) {
         const igraph_real_t expected = MATRIX(
             projection_trace, row,
             accepted ? IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_PROJECTED :
-                       IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_BEFORE);
+                       IGRAPH_LEIDEN_OVERLAP_PROJECTION_QUALITY_AFTER_LOCAL);
 
         saw_collision = saw_collision || MATRIX(
             projection_trace, row,
@@ -1111,6 +1111,10 @@ static void test_overlapping_diagnostic_trace(void) {
                       igraph_ecount(&graph));
         IGRAPH_ASSERT(MATRIX(projection_trace, row,
                              IGRAPH_LEIDEN_OVERLAP_PROJECTION_COLLISION_COUNT) >= 0.0);
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL) >= 1.0);
+        IGRAPH_ASSERT(MATRIX(projection_trace, row,
+                             IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED) >= 1.0);
         IGRAPH_ASSERT(MATRIX(projection_trace, row,
                              IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_IDENTITY_ABS_ERROR) <=
                       1e-12);
@@ -1140,6 +1144,42 @@ static void test_overlapping_diagnostic_trace(void) {
 
     igraph_matrix_destroy(&projection_trace);
     igraph_matrix_destroy(&move_trace);
+    igraph_vector_int_list_destroy(&memberships);
+    igraph_destroy(&graph);
+    VERIFY_FINALLY_STACK();
+}
+
+/* The counts describe the proposal before rollback, including a kept tie
+ * that removes duplicate label bodies and the following rejected tie. */
+static void test_overlapping_trace_label_counts(void) {
+    igraph_t graph;
+    igraph_vector_int_list_t memberships;
+    igraph_matrix_t moves, projections;
+    igraph_int_t nb_clusters;
+    igraph_real_t quality;
+
+    IGRAPH_ASSERT(igraph_small(&graph, 3, IGRAPH_UNDIRECTED, 0, 1, 0, 2, -1) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_vector_int_list_init(&memberships, 3) == IGRAPH_SUCCESS);
+    for (igraph_int_t v = 0; v < 3; v++) {
+        igraph_vector_int_t *row = igraph_vector_int_list_get_ptr(&memberships, v);
+        IGRAPH_ASSERT(igraph_vector_int_push_back(row, 0) == IGRAPH_SUCCESS);
+        IGRAPH_ASSERT(igraph_vector_int_push_back(row, 1) == IGRAPH_SUCCESS);
+    }
+    IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 0) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_community_leiden_with_diagnostics(
+        &graph, NULL, NULL, NULL, 0.0, 0.01, 2, true, 2, true, false,
+        &memberships, &nb_clusters, &quality, &moves, &projections) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_matrix_nrow(&projections) == 2);
+    IGRAPH_ASSERT(MATRIX(projections, 0, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL) == 2);
+    IGRAPH_ASSERT(MATRIX(projections, 0, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED) == 1);
+    IGRAPH_ASSERT(MATRIX(projections, 0, IGRAPH_LEIDEN_OVERLAP_PROJECTION_ACCEPTED) == 1);
+    IGRAPH_ASSERT(MATRIX(projections, 1, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL) == 1);
+    IGRAPH_ASSERT(MATRIX(projections, 1, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED) == 1);
+    IGRAPH_ASSERT(MATRIX(projections, 1, IGRAPH_LEIDEN_OVERLAP_PROJECTION_ACCEPTED) == 0);
+    IGRAPH_ASSERT(nb_clusters == 1);
+
+    igraph_matrix_destroy(&moves);
+    igraph_matrix_destroy(&projections);
     igraph_vector_int_list_destroy(&memberships);
     igraph_destroy(&graph);
     VERIFY_FINALLY_STACK();
@@ -1405,6 +1445,7 @@ int main(void) {
     test_overlapping_input_contract();
     test_positive_budget_original_quality_guard();
     test_overlapping_diagnostic_trace();
+    test_overlapping_trace_label_counts();
     test_overlapping_interrupt_unwind();
 
     /* Overlapping Leiden via the unified public API. Each call reseeds the

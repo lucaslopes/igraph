@@ -2446,6 +2446,8 @@ typedef struct {
     igraph_int_t collision_count;
     igraph_bool_t local_changed;
     igraph_bool_t token_changed;
+    igraph_int_t labels_local;
+    igraph_int_t labels_proposed;
     igraph_bool_t dedup_changed;
 } overlap_checkpoint_t;
 
@@ -4217,6 +4219,7 @@ static igraph_error_t overlap_iteration(const overlap_run_t *run,
         checkpoint->original_unnormalized =
             checkpoint->quality_after_local * checkpoint->original_weight;
     }
+        IGRAPH_CHECK(overlap_count_labels(local->cover, &checkpoint->labels_local));
 
     IGRAPH_CHECK(overlap_token_phase(run, local, nb_comms, checkpoint, &token_changed,
                                      &dedup_changed));
@@ -4226,6 +4229,7 @@ static igraph_error_t overlap_iteration(const overlap_run_t *run,
         IGRAPH_CHECK(overlap_quality(run->graph, run->edge_weights, run->node_weights,
                                      run->memberships, run->resolution,
                                      &checkpoint->quality_projected));
+        IGRAPH_CHECK(overlap_count_labels(run->memberships, &checkpoint->labels_proposed));
     }
     if (phase_changed || token_changed || dedup_changed) {
         *changed = true;
@@ -4329,6 +4333,8 @@ static igraph_error_t overlap_record_projection(const overlap_run_t *run, igraph
 static igraph_error_t overlap_guarded_iteration(const overlap_run_t *run, overlap_guard_t *guard,
                                                 igraph_int_t itr, igraph_bool_t *changed,
                                                 igraph_bool_t *stop) {
+    values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL] = checkpoint->labels_local;
+    values[IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED] = checkpoint->labels_proposed;
     const igraph_real_t quality_before = guard->committed_quality;
     overlap_local_state_t local = { .cover = &guard->local_cover, .quality = IGRAPH_NAN };
     overlap_checkpoint_t checkpoint;
@@ -5187,7 +5193,10 @@ igraph_error_t igraph_community_leiden_with_constraints(
  * projection trace records original and token total edge weights separately,
  * verifies the frozen-multiplicity unnormalized identity, counts same-origin
  * token collisions, and records whether each projected proposal was committed
- * or restored by the original-space quality guard.
+ * or restored by the original-space quality guard. The final two columns,
+ * added in 1.0.0.5, count occupied labels after local moving and in the
+ * projected proposal before rollback. They allow a consumer to verify the
+ * guard's label-reducing tie rule; the preceding 19 columns are unchanged.
  *
  * This path is intended for bounded validation fixtures. Direct quality
  * recomputation after every accepted move is deliberately expensive. A

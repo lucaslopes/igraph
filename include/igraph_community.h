@@ -291,7 +291,9 @@ typedef enum {
     IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH
 } igraph_leiden_overlap_move_trace_column_t;
 
-/** Columns returned by the opt-in overlapping Leiden projection trace. */
+/** Columns returned by the opt-in overlapping Leiden projection trace.
+ * The label-count columns were appended in 1.0.0.5 (width 19 -> 21);
+ * all preceding column indices retain their original meanings. */
 typedef enum {
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_ITERATION = 0,
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_ORIGINAL_WEIGHT,
@@ -312,6 +314,8 @@ typedef enum {
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_LOCAL_CHANGED,
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_TOKEN_CHANGED,
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_DEDUP_CHANGED,
+    IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL,
+    IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED,
     IGRAPH_LEIDEN_OVERLAP_PROJECTION_TRACE_WIDTH
 } igraph_leiden_overlap_projection_trace_column_t;
 
