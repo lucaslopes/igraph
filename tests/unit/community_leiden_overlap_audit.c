@@ -229,6 +229,50 @@ static void test_disjoint_zero_resolution_signed_witness(void) {
     printf("Disjoint zero-resolution signed witness: OK\n");
 }
 
+/* Signed node weights can make an omitted occupied cluster better than an
+ * empty cluster, even at positive resolution with isolation enabled. Vertex
+ * 0 is isolated, but gains 1 (undirected) or 2 (directed) by joining {1, 2}.
+ * The edge of weight 100 keeps those two vertices together for every visit
+ * order. Cover undirected masses, shared directed in/out weights, and a
+ * negative weight in only one directed vector. */
+static void test_disjoint_signed_node_weight_witness(void) {
+    const igraph_real_t signed_both[] = {1.0, -2.0, 1.0};
+    const igraph_real_t signed_one[] = {1.0, -5.0, 1.0};
+    const igraph_real_t positive[] = {1.0, 1.0, 1.0};
+    const igraph_real_t edge_value[] = {100.0};
+    const igraph_vector_t weights = igraph_vector_view(edge_value, 1);
+    const igraph_vector_t both = igraph_vector_view(signed_both, 3);
+    const igraph_vector_t one = igraph_vector_view(signed_one, 3);
+    const igraph_vector_t nonnegative = igraph_vector_view(positive, 3);
+
+    for (igraph_int_t mode = 0; mode < 4; mode++) {
+        igraph_t graph;
+        igraph_vector_int_t membership;
+        const igraph_vector_t *out = mode < 2 ? &both :
+                                            mode == 2 ? &nonnegative : &one;
+        const igraph_vector_t *in = mode < 2 ? NULL :
+                                           mode == 2 ? &one : &nonnegative;
+
+        igraph_small(&graph, 3, mode != 0, 1, 2, -1);
+        igraph_vector_int_init(&membership, 3);
+        for (igraph_int_t seed = 0; seed < 4; seed++) {
+            igraph_int_t nb;
+            VECTOR(membership)[0] = 0;
+            VECTOR(membership)[1] = VECTOR(membership)[2] = 1;
+            igraph_rng_seed(igraph_rng_default(), seed);
+            IGRAPH_ASSERT(igraph_community_leiden(
+                &graph, &weights, out, in, 1.0, 0.01, 1, true, -1,
+                true, true, &membership, NULL, &nb, NULL) == IGRAPH_SUCCESS);
+            IGRAPH_ASSERT(nb == 1);
+            IGRAPH_ASSERT(VECTOR(membership)[0] == VECTOR(membership)[1]);
+            IGRAPH_ASSERT(VECTOR(membership)[1] == VECTOR(membership)[2]);
+        }
+        igraph_vector_int_destroy(&membership);
+        igraph_destroy(&graph);
+    }
+    printf("Disjoint signed-node-weight omitted cluster: OK\n");
+}
+
 /* The diagnostic entry point recomputes every accepted move and the token
  * identity from scratch. Those recomputations sum O(m + #labels) terms, so
  * comparing them with a purely relative margin reported false mismatches on
@@ -375,6 +419,7 @@ int main(void) {
 
     test_zero_potential_token_stage_terminates();
     test_disjoint_zero_resolution_signed_witness();
+    test_disjoint_signed_node_weight_witness();
     test_diagnostic_checks_have_no_false_mismatch();
     test_tied_token_proposal_merges_duplicate_labels();
     test_disjoint_last_level_is_projected();

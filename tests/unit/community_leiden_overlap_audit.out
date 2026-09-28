@@ -1,5 +1,6 @@
 Zero-potential token stage terminates: OK
 Disjoint zero-resolution signed witness: OK
+Disjoint signed-node-weight omitted cluster: OK
 Diagnostic checks have no false mismatch: OK
 Tied token proposal merges duplicate labels: OK
 Disjoint last aggregation level is projected: OK

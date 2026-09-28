@@ -26,8 +26,8 @@
  *   1. The disjoint Leiden algorithm (Traag, Waltman & van Eck, 2019) for the
  *      Constant Potts Model and modularity-type objectives: local moving,
  *      refinement, aggregation, repeated on ever coarser graphs.
- *   2. Its overlapping extension, the unit-l2 CPM hedonic game (Felipe,
- *      Avrachenkov & Menasche, Physica A 680:130989, 2025): every vertex holds
+ *   2. A unit-l2 overlapping extension of the disjoint CPM hedonic game
+ *      (Felipe, Avrachenkov & Menasche, Physica A 680:130989, 2025): every vertex holds
  *      a set of at most max_memberships labels, and local moving computes an
  *      exact best-response *set* by a sorted-prefix rule.
  *   3. Optional global limits on the number of occupied communities, and an
@@ -639,7 +639,8 @@ typedef struct {
  *   - with isolation allowed, one recyclable empty cluster;
  *   - one extreme-mass *omitted* cluster whenever the empty cluster does not
  *     dominate all omitted clusters: with isolation disabled, with
- *     gamma * n_v < 0, or when a count limit withholds the empty cluster.
+ *     gamma * n_v < 0, with signed node weights, or when a count limit
+ *     withholds the empty cluster.
  *
  * Count limits: an exact count never offers an empty cluster and keeps the
  * last vertex of a cluster in place; an upper bound offers an empty cluster
@@ -661,6 +662,7 @@ typedef struct {
     /* Derived flags. */
     igraph_bool_t directed;
     igraph_bool_t count_constrained;
+    igraph_bool_t signed_node_weights;          /* an occupied mass may be negative */
     /* Undirected omitted-cluster queries use the label index of Section 2.
      * Directed masses depend on the moving vertex's in- and out-weights, so
      * directed graphs keep the linear scan, as do vertices whose weight has
@@ -777,8 +779,12 @@ static igraph_error_t leiden_mover_init(leiden_mover_t *mover,
     mover->directed = (vertex_in_weights != NULL);
     mover->count_constrained =
         options->max_total_communities >= 0 || options->n_communities >= 0;
+    mover->signed_node_weights = n > 0 &&
+        (igraph_vector_min(vertex_out_weights) < 0.0 ||
+         (mover->directed && igraph_vector_min(vertex_in_weights) < 0.0));
     mover->use_cluster_index = !mover->directed && options->resolution != 0.0 &&
-        (!options->allow_isolation || options->resolution < 0.0 || mover->count_constrained);
+        (!options->allow_isolation || options->resolution < 0.0 || mover->count_constrained ||
+         mover->signed_node_weights);
 
     IGRAPH_CHECK(leiden_mover_init_queue(mover, n));
     IGRAPH_CHECK(leiden_mover_init_clusters(mover, n));
@@ -877,14 +883,17 @@ static igraph_real_t leiden_mover_signed_scale(const leiden_mover_t *mover, igra
 }
 
 /* Does v need an omitted cluster to complete its candidate set? An empty
- * cluster (mass 0) dominates omitted clusters only when gamma * n_v >= 0.
+ * cluster (mass 0) dominates omitted clusters only when gamma * n_v >= 0
+ * and all masses are non-negative. Signed node weights can give an omitted
+ * cluster positive gain even with positive resolution and isolation enabled.
  * When a count limit withholds the empty cluster, a vertex that was alone in
  * its cluster still has that zero-gain option; otherwise it needs one. */
 static igraph_bool_t leiden_mover_needs_omitted_cluster(const leiden_mover_t *mover,
                                                         igraph_int_t v,
                                                         igraph_int_t current_cluster,
                                                         igraph_bool_t empty_offered) {
-    return !mover->options->allow_isolation || leiden_mover_signed_scale(mover, v) < 0.0 ||
+    return mover->signed_node_weights || !mover->options->allow_isolation ||
+           leiden_mover_signed_scale(mover, v) < 0.0 ||
            (mover->count_constrained && !empty_offered &&
             VECTOR(mover->nb_vertices_per_cluster)[current_cluster] > 0);
 }
