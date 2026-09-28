@@ -12,6 +12,9 @@
 - The overlapping candidate buffer is sized from the neighbourhood and grows on demand instead of reserving `n * max_memberships + 1` entries per call.
 - Overlapping multilevel proposals are compared with the cover reached by the same iteration's local moving, which is restored on rejection. A proposal within the numerical margin of that cover is kept when it occupies fewer labels (token projection merges duplicate community bodies), at most `n` times per call.
 - Start labels of overlapping covers may lie below `n * max_memberships` (previously below `n`).
+- Projection diagnostics append `labels_local` and `labels_proposed` to the
+  previous 19 columns, reporting proposed counts before rollback. Consumers
+  can now check both the fewer-label tie condition and its per-call budget.
 
 ### Fixed
 
@@ -21,6 +24,12 @@
 - The diagnostic checks of `igraph_community_leiden_with_diagnostics()` no longer report false mismatches caused by summation rounding.
 - The Leiden multilevel driver now writes the last aggregation level back to the original vertices when that level's local moving moved anything. Earlier releases (including upstream igraph) dropped those moves, which with signed edge weights could make `n_iterations < 0` loop forever.
 - The disjoint local mover reports an interruption through the error-unwinding stack instead of returning with live cleanup entries.
+- Signed disjoint node weights no longer hide an improving omitted cluster
+  when isolation is enabled at positive resolution; directed in/out weights
+  are covered as well.
+- An overlapping label held by the moving vertex alone contributes exactly
+  zero to its current score, avoiding self-penalty cancellation that could
+  hide an improving exact-count response with large node weights.
 
 ### Other
 

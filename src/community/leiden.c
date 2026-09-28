@@ -2358,8 +2358,8 @@ static igraph_error_t leiden_disjoint_run(const igraph_t *graph,
  * The pairwise coefficient kappa_ij = |sigma_i & sigma_j| / sqrt(k_i k_j)
  * is at most 1 (Cauchy-Schwarz; equality iff sigma_i == sigma_j), so no pair
  * of vertices can amplify an edge beyond its weight, and on a partition
- * (all k = 1) Q is exactly the CPM quality of Section 3.5. The reported
- * quality divides Q by the total edge weight.
+ * (all k = 1) Q divided by the total edge weight equals the CPM quality of
+ * Section 3.5. The reported overlapping quality uses that same normalization.
  *
  * Why 1/sqrt(k) and not 1/k? With 1/k the diagonal term (n_v f_v)^2 depends
  * on k, and an isolated vertex with gamma > 0 would prefer two private labels
@@ -2389,8 +2389,9 @@ static igraph_error_t leiden_disjoint_run(const igraph_t *graph,
  * label when isolation is allowed (gain 0, which subsumes leaving to a new
  * community), and "omitted" labels -- occupied labels held by no neighbour --
  * when they can beat the empty label: the least massive one for
- * gamma * n_v > 0 with isolation disabled, and the most massive ones for
- * gamma * n_v < 0. The label index of Section 2 finds them without a scan.
+ * gamma * n_v > 0 with isolation disabled or an applicable count limit, and
+ * the most massive ones for gamma * n_v < 0. Section 4.4.3 gives the precise
+ * conditions and uses the label index of Section 2 to find them without a scan.
  *
  * Adding a label rescales all of v's intensities, so entry pays only if
  * g_c > (sqrt((k+1)/k) - 1) * sum of the current gains. This explains one
@@ -2416,8 +2417,9 @@ static igraph_error_t leiden_disjoint_run(const igraph_t *graph,
  * refinement and aggregation of Section 3 run unchanged on tokens (in
  * tolerant mode). Merges on coarse levels can put two tokens of one vertex
  * into the same label; projection collapses such duplicates. Every proposal
- * is then checked in the original graph (Section 4.7) and kept only if it
- * improves on the cover reached by local moving.
+ * is then checked in the original graph (Section 4.7): it must improve on
+ * the cover reached by local moving, or tie within the numerical margin
+ * while occupying fewer labels and spending one of the call's limited ties.
  */
 
 /* Where the diagnostic entry point writes its records (NULL matrices when
@@ -2732,7 +2734,8 @@ static igraph_error_t overlap_quality(const igraph_t *graph,
  * state (debug builds also report any drift). A rebuild that corrects the
  * state materially re-queues every vertex. Masses are rebuilt exactly at the
  * start of every call, so a sweep without moves -- the certificate --
- * always evaluates exact masses.
+ * evaluates masses freshly summed from the unchanged cover, without
+ * incremental-update drift (the sums still round in floating point).
  */
 
 /* ---- Section 4.4.1  Candidate buffer -------------------------------------- */
@@ -4246,17 +4249,23 @@ static igraph_error_t overlap_iteration(const overlap_run_t *run,
  *
  *   - it is kept if its quality is higher beyond the tie margin;
  *   - it is also kept if it is within the margin (not worse beyond it) and
- *     occupies strictly fewer labels: projection merges labels with
- *     identical members, which single-vertex moves cannot merge; at most n
- *     such ties are kept per call, so the iterations terminate;
+ *     occupies strictly fewer labels. This permits, for example, a neutral
+ *     merge of identical label bodies, but the test does not require that
+ *     particular transformation. At most n such ties are kept per call;
  *   - otherwise the local-moving cover is restored (so the local improvement
  *     is never lost) and the iterations end.
+ *
+ * The tie budget bounds tolerated downward steps; label count need not
+ * decrease across a whole iteration because local moving can create labels.
+ * In exact arithmetic, strict-potential steps on a finite state space plus
+ * finitely many ties terminate. The floating-point implementation uses the
+ * local progress safeguards described in Section 4.1.
  *
  * When the caller asked for convergence (n_iterations < 0), the run finishes
  * with local-moving sweeps until one moves nothing: token refinement,
  * aggregation and rollback can leave a cover that is not an overlapping best
- * response. This is the Nash certificate (Definition 3 / Proposition 1 of
- * Felipe, Avrachenkov & Menasche, 2025), up to the tie margin. In
+ * response. This is an algorithmic certificate of unilateral stability for
+ * the overlapping game, up to the tie margin and arithmetic error. In
  * local-moving-only mode the last iteration already was such a sweep.
  */
 
@@ -5102,8 +5111,12 @@ static igraph_error_t leiden_check_counts(igraph_int_t max_memberships,
  * community, so a completed sweep is a best response over the feasible
  * unilateral actions. For covers with an exact count, labels held by the
  * moving vertex alone are retained and the remaining labels are chosen by the
- * usual sorted-prefix rule. The resulting states are constrained unilateral
- * equilibria: the feasible deviations of a vertex depend on the others.
+ * usual sorted-prefix rule. With a negative iteration budget, the final
+ * no-change sweep certifies a constrained unilateral equilibrium under the
+ * numerical comparison rule (strict for partitions, tolerance-level for
+ * covers), subject to floating-point arithmetic error. The feasible
+ * deviations of a vertex depend on the others. A non-negative iteration
+ * budget does not provide this certificate.
  *
  * </para><para>
  * Without a start state, a feasible start is built deterministically: with a
