@@ -1,0 +1,4 @@
+igraph 1.0.0 igraph_community_leiden equals the extended defaults: OK
+igraph 1.0.0 igraph_community_leiden argument errors: OK
+compatibility matrix (1728 cells, diagnostic = constrained result): OK
+invalid cross-mode combinations (20 cases, both extended entry points): OK

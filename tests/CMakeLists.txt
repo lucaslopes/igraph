@@ -676,6 +676,9 @@ add_legacy_tests(
   FOLDER tests/unit NAMES
   community_indexing
   community_leiden
+  community_leiden_compat
+  community_leiden_constraints
+  community_leiden_overlap_audit
   community_label_propagation
   community_label_propagation2
   community_label_propagation3
@@ -706,6 +709,8 @@ add_legacy_tests(
 
 # use a higher test timeout for the Infomap algorithm
 set_tests_properties("test::igraph_community_infomap" PROPERTIES TIMEOUT 150)
+# A regression of the last-level projection in Leiden makes this test loop.
+set_tests_properties("test::community_leiden_overlap_audit" PROPERTIES TIMEOUT 300)
 
 # cliques.at
 add_examples(

@@ -355,6 +355,18 @@ target_compile_definitions(
 #   igraph PRIVATE -Wshorten-64-to-32
 # )
 
+# On 32-bit x86, GCC and Clang default to x87 arithmetic with 80-bit
+# intermediates, so the Leiden move decisions would depend on where the
+# compiler happens to round to double. Compile that file with SSE2 double
+# arithmetic, as on 64-bit targets (MSVC already defaults to SSE2).
+include(CheckSymbolExists)
+check_symbol_exists(__i386__ "" IGRAPH_TARGET_X86_32)
+if(IGRAPH_TARGET_X86_32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(
+    community/leiden.c PROPERTIES COMPILE_OPTIONS "-msse2;-mfpmath=sse"
+  )
+endif()
+
 # Make sure that a macro named IGRAPH_FILE_BASENAME is provided in every
 # compiler call so we can use these in debug messages without revealing the
 # full path of the file on the machine where it was compiled

@@ -32,6 +32,10 @@ elseif(ERROR_CODE)
   message(FATAL_ERROR "Exiting test.")
 else()
   string(REPLACE ${IGRAPH_VERSION} "\@VERSION\@" OBSERVED_OUTPUT "${OBSERVED_OUTPUT}")
+  # Fallback: if the version string did not match exactly (e.g., Git-describe suffixes),
+  # normalize any DOT header of the form "/* Created by igraph ... */" to use @VERSION@.
+  # This keeps expected outputs stable across local build variants.
+  string(REGEX REPLACE "/\\* Created by igraph [^\n]*\\*/" "/* Created by igraph @VERSION@ */" OBSERVED_OUTPUT "${OBSERVED_OUTPUT}")
   file(WRITE ${OBSERVED_OUTPUT_FILE} "${OBSERVED_OUTPUT}")
 
   execute_process(

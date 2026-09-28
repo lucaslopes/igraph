@@ -1,5 +1,31 @@
 # igraph C library changelog
 
+## [1.0.0.5] - lucas-igraph
+
+This release extends the Leiden implementation of igraph 1.0.0 with
+overlapping communities, global community-count limits, and diagnostics.
+`igraph_community_leiden()` and `igraph_community_leiden_simple()` keep the
+igraph 1.0.0 signatures and semantics; every new control is reached through
+two additional entry points.
+
+### Added
+
+- `igraph_community_leiden_with_constraints()` is the extended Leiden interface. `max_memberships > 1` computes an overlapping cover returned in `memberships`: a vertex that holds `k` communities takes part in each with intensity `1/sqrt(k)`, and local moving computes an exact best-response set of communities under the resulting unit-l2 CPM potential, which equals the CPM quality on partitions. Multilevel runs refine and aggregate a token graph with one vertex per (vertex, community) pair and keep a projected proposal only if it does not lower the original-graph quality beyond a numerical margin (a bounded number of label-reducing ties per call). `allow_isolation` controls moves to empty communities and `local_move_only` skips refinement and aggregation. With a negative iteration budget the run ends with local-moving sweeps that certify, up to floating-point tolerance, that no vertex has an improving unilateral change.
+- Global community-count limits for partitions and covers: `max_total_communities` (at most K occupied communities) and `n_communities` (exactly K), enforced at every local-moving, aggregate and token level. Infeasible limits and start states that violate them are rejected with `IGRAPH_EINVAL`, never repaired; without a start state a deterministic feasible start is built.
+- `igraph_community_leiden_with_diagnostics()` runs the same computation with optional outputs: an accepted-move trace (partitions on every aggregation level, and covers) that checks each predicted change of the objective against a direct recomputation and records level and occupied-community counts; a projection trace for overlapping multilevel proposals; and a compact counter vector (`igraph_leiden_counter_t`, layout `IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION`). Recording never influences the result.
+- Overlapping inputs are validated (undirected loopless graphs, finite non-negative weights with a positive total, finite resolution and `beta`, `max_memberships` at most the vertex count, overflow-safe token expansion), and cross-mode errors name `max_memberships`.
+
+### Fixed
+
+- The Leiden multilevel driver wrote a level's clustering back to the original vertices only when a coarser level followed, so moves made by the last level's local moving were dropped while the iteration reported a change; with `n_iterations < 0` this could loop forever (for example with signed edge weights). The last level is now written back when it moved.
+- `igraph_community_leiden()` left `nb_clusters` and `quality` unset for a zero iteration budget; it now reports the renumbered start partition and its quality.
+- The disjoint local mover now unwinds interruptions through the error-cleanup stack instead of returning with live cleanup entries.
+- Building an incidence list (`igraph_inclist_init()` and the functions that use it) now unwinds an interruption through the error-cleanup stack, releasing its partial allocations.
+
+### Other
+
+- `src/community/leiden.c` is organized into documented sections with a table of contents and small single-purpose functions.
+
 ## [1.0.0]
 
 Nearly twenty years after the first igraph release, igraph 1.0 has finally arrived. This release focuses on providing a stable and more consistent interface that users and downstream maintainers can rely on with confidence, as well as adding new features that required API-breaking changes. There is now an official versioning policy, see [`VERSIONING.md`](VERSIONING.md).

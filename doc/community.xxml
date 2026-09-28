@@ -44,6 +44,8 @@
 <!-- doxrox-include igraph_community_fastgreedy -->
 <!-- doxrox-include igraph_community_multilevel -->
 <!-- doxrox-include igraph_community_leiden -->
+<!-- doxrox-include igraph_community_leiden_with_constraints -->
+<!-- doxrox-include igraph_community_leiden_with_diagnostics -->
 <!-- doxrox-include igraph_community_leiden_simple -->
 </section>
 

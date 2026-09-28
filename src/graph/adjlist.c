@@ -751,7 +751,14 @@ igraph_error_t igraph_inclist_init(const igraph_t *graph,
 
     IGRAPH_FINALLY(igraph_inclist_destroy, il);
     for (igraph_int_t i = 0; i < il->length; i++) {
-        IGRAPH_ALLOW_INTERRUPTION_LIMITED(iter, 1000);
+        if (++iter >= 1000) {
+            /* Propagate through the error handler while 'degrees' and the
+             * partially initialized incidence list are still in scope. */
+            if (igraph_allow_interruption()) {
+                IGRAPH_ERROR("Interrupted.", IGRAPH_INTERRUPTED);
+            }
+            iter = 0;
+        }
 
         IGRAPH_CHECK(igraph_vector_int_init(&il->incs[i], VECTOR(degrees)[i]));
         IGRAPH_CHECK(igraph_incident(graph, &il->incs[i], i, mode, loops));
