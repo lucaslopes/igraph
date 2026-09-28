@@ -273,6 +273,54 @@ static void test_disjoint_signed_node_weight_witness(void) {
     printf("Disjoint signed-node-weight omitted cluster: OK\n");
 }
 
+/* Vertex 0 alone holds labels 0 and 1. Their true gains are exactly zero,
+ * but subtracting then adding its large self penalty used to leave a
+ * positive rounding residual in its current score. Under exact K=3, the
+ * best response retains those labels and also joins label 2: its utility
+ * increases from zero to 1/sqrt(3). The edge of weight 100 keeps vertices
+ * 1 and 2 in label 2. Computing utility directly from the other rows avoids
+ * the cancellation that caused the defect. */
+static void test_exclusive_label_current_score_is_zero(void) {
+    const igraph_real_t edge_values[] = {1.0, 100.0};
+    const igraph_real_t node_values[] = {1e8, 0.0, 0.0};
+    const igraph_vector_t weights = igraph_vector_view(edge_values, 2);
+    const igraph_vector_t node_weights = igraph_vector_view(node_values, 3);
+    igraph_t graph;
+    igraph_vector_int_list_t rows;
+
+    igraph_small(&graph, 3, IGRAPH_UNDIRECTED, 0, 1, 1, 2, -1);
+    igraph_vector_int_list_init(&rows, 3);
+    for (igraph_int_t seed = 0; seed < 4; seed++) {
+        igraph_int_t nb;
+        igraph_real_t direct_utility;
+        for (igraph_int_t v = 0; v < 3; v++) {
+            igraph_vector_int_clear(igraph_vector_int_list_get_ptr(&rows, v));
+        }
+        igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&rows, 0), 0);
+        igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&rows, 0), 1);
+        igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&rows, 1), 2);
+        igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&rows, 2), 2);
+        igraph_rng_seed(igraph_rng_default(), seed);
+        IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+            &graph, &weights, &node_weights, NULL, 1.0, 0.01, 3, -1, 3,
+            true, -1, true, true, NULL, &rows, &nb, NULL) == IGRAPH_SUCCESS);
+        IGRAPH_ASSERT(nb == 3);
+        IGRAPH_ASSERT(igraph_vector_int_size(igraph_vector_int_list_get_ptr(&rows, 0)) == 3);
+        IGRAPH_ASSERT(igraph_vector_int_size(igraph_vector_int_list_get_ptr(&rows, 1)) == 1);
+        IGRAPH_ASSERT(igraph_vector_int_size(igraph_vector_int_list_get_ptr(&rows, 2)) == 1);
+        IGRAPH_ASSERT(igraph_vector_int_all_e(igraph_vector_int_list_get_ptr(&rows, 1),
+                                               igraph_vector_int_list_get_ptr(&rows, 2)));
+        direct_utility = igraph_vector_int_contains(
+            igraph_vector_int_list_get_ptr(&rows, 0),
+            VECTOR(*igraph_vector_int_list_get_ptr(&rows, 1))[0]) / sqrt(3.0);
+        IGRAPH_ASSERT(fabs(direct_utility - 1.0 / sqrt(3.0)) < 1e-15);
+        IGRAPH_ASSERT(direct_utility > 0.5); /* the starting utility was zero */
+    }
+    igraph_vector_int_list_destroy(&rows);
+    igraph_destroy(&graph);
+    printf("Exclusive-label current score avoids self cancellation: OK\n");
+}
+
 /* The diagnostic entry point recomputes every accepted move and the token
  * identity from scratch. Those recomputations sum O(m + #labels) terms, so
  * comparing them with a purely relative margin reported false mismatches on
@@ -420,6 +468,7 @@ int main(void) {
     test_zero_potential_token_stage_terminates();
     test_disjoint_zero_resolution_signed_witness();
     test_disjoint_signed_node_weight_witness();
+    test_exclusive_label_current_score_is_zero();
     test_diagnostic_checks_have_no_false_mismatch();
     test_tied_token_proposal_merges_duplicate_labels();
     test_disjoint_last_level_is_projected();

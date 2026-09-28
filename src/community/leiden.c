@@ -3411,6 +3411,12 @@ static void overlap_score_current_row(overlap_mover_t *mover, overlap_visit_t *v
 
     for (igraph_int_t i = 0; i < visit->k; i++) {
         cand[i].gain += mover->resolution * visit->nv * visit->nv * visit->fv;
+        /* An exclusive label has no other mass or edge support. Avoid a
+         * cancellation residual in the current score before the mandatory
+         * prefix is formed; with large node weights it can hide real moves. */
+        if (VECTOR(mover->comm_tokens)[cand[i].comm] == 1) {
+            cand[i].gain = 0.0;
+        }
         visit->cur_score += cand[i].gain;
     }
     visit->cur_score *= visit->fv;
