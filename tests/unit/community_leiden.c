@@ -41,10 +41,8 @@ void run_leiden_CPM(const igraph_t *graph, const igraph_vector_t *edge_weights, 
 
     /* Use same seed as for the simplified interface below, to ensure the same result. */
     igraph_rng_seed(igraph_rng_default(), 123);
-    igraph_community_leiden(graph, edge_weights, NULL, NULL, resolution, 0.01,
-                            /*max_memberships=*/ 1, /*start=*/ 0, /*n_iterations=*/ 2,
-                            /*allow_isolation=*/ 1, /*local_move_only=*/ 0,
-                            &membership, /*memberships=*/ NULL, &nb_clusters, &quality);
+    igraph_community_leiden(graph, edge_weights, NULL, NULL, resolution, 0.01, /*start=*/ 0, /*n_iterations=*/ 2,
+                            &membership, &nb_clusters, &quality);
 
     /* Handle negative zeros. */
     if (fabs(quality) < TOL) quality = 0.0;
@@ -98,10 +96,8 @@ void run_leiden_modularity(igraph_t *graph, igraph_vector_t *edge_weights) {
     /* Use same seed as for the simplified interface below, to ensure the same result. */
     igraph_rng_seed(igraph_rng_default(), 123);
     igraph_community_leiden(graph, edge_weights, &out_strength, directed ? &in_strength : NULL,
-                            1.0 / (directed_multiplier * m), 0.01,
-                            /*max_memberships=*/ 1, /*start=*/ 0, /*n_iterations=*/ 2,
-                            /*allow_isolation=*/ 1, /*local_move_only=*/ 0,
-                            &membership, /*memberships=*/ NULL, &nb_clusters, &quality);
+                            1.0 / (directed_multiplier * m), 0.01, /*start=*/ 0, /*n_iterations=*/ 2,
+                            &membership, &nb_clusters, &quality);
 
     igraph_modularity(graph, &membership, edge_weights, 1.0, IGRAPH_DIRECTED, &quality2);
     if (isnan(quality)) {
@@ -147,8 +143,8 @@ void run_leiden_overlapping(const igraph_t *graph, const igraph_vector_t *edge_w
 
     igraph_vector_int_list_init(&memberships, 0);
 
-    igraph_community_leiden(graph, edge_weights, NULL, NULL, resolution_parameter,
-                            0.01, max_memberships, /*start=*/ 0, /*n_iterations=*/ 2,
+    igraph_community_leiden_with_constraints(graph, edge_weights, NULL, NULL, resolution_parameter,
+                            0.01, max_memberships, /* no count limits */ -1, -1, /*start=*/ 0, /*n_iterations=*/ 2,
                             /*allow_isolation=*/ 1, /*local_move_only=*/ 0,
                             /*membership=*/ NULL, &memberships, &nb_clusters, &quality);
 
@@ -186,15 +182,13 @@ void test_max_memberships_one_is_disjoint(void) {
 
     /* Explicit disjoint call: max_memberships=1, membership vector. */
     igraph_rng_seed(igraph_rng_default(), 42);
-    igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01,
-                            /*max_memberships=*/ 1, /*start=*/ 0, /*n_iterations=*/ 2,
-                            /*allow_isolation=*/ 1, /*local_move_only=*/ 0,
-                            &membership, /*memberships=*/ NULL, &nb_a, &quality_a);
+    igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01, /*start=*/ 0, /*n_iterations=*/ 2,
+                            &membership, &nb_a, &quality_a);
 
     /* Same parameters via memberships-only (list form). */
     igraph_rng_seed(igraph_rng_default(), 42);
-    igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01,
-                            /*max_memberships=*/ 1, /*start=*/ 0, /*n_iterations=*/ 2,
+    igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.05, 0.01,
+                            /*max_memberships=*/ 1, /* no count limits */ -1, -1, /*start=*/ 0, /*n_iterations=*/ 2,
                             /*allow_isolation=*/ 1, /*local_move_only=*/ 0,
                             /*membership=*/ NULL, &memberships, &nb_b, &quality_b);
 
@@ -211,8 +205,8 @@ void test_max_memberships_one_is_disjoint(void) {
 
     /* Missing both outputs in disjoint mode is an error. */
     CHECK_ERROR(
-        igraph_community_leiden(&graph, NULL, NULL, NULL, 0.05, 0.01,
-                                1, 0, 2, 1, 0,
+        igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.05, 0.01,
+                                1, /* no count limits */ -1, -1, 0, 2, 1, 0,
                                 /*membership=*/ NULL, /*memberships=*/ NULL,
                                 &nb_a, &quality_a),
         IGRAPH_EINVAL);
@@ -331,8 +325,8 @@ static void test_native_nontermination_fixture(void) {
 
     /* n_iterations=0 performs no overlapping phase and preserves singletons. */
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, false, 0, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, false, 0, true, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     for (igraph_integer_t v = 0; v < 80; v++) {
@@ -345,8 +339,8 @@ static void test_native_nontermination_fixture(void) {
     /* A positive bound is honored in local-move-only mode: one phase returns. */
     igraph_vector_int_list_clear(&memberships);
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, false, 1, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, false, 1, true, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     IGRAPH_ASSERT(isfinite(quality));
@@ -354,8 +348,8 @@ static void test_native_nontermination_fixture(void) {
     /* Both isolation settings must terminate from the problematic singleton start. */
     igraph_vector_int_list_clear(&memberships);
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, false, -1, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, false, -1, true, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     IGRAPH_ASSERT(isfinite(quality));
@@ -370,8 +364,8 @@ static void test_native_nontermination_fixture(void) {
 
     /* A returned cover is a stable initial cover for another negative run. */
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, true, -1, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, true, -1, true, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     assert_overlapping_covers_equal(&memberships, &snapshot);
@@ -379,8 +373,8 @@ static void test_native_nontermination_fixture(void) {
 
     igraph_vector_int_list_clear(&memberships);
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, false, -1, false, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, false, -1, false, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     IGRAPH_ASSERT(isfinite(quality));
@@ -389,8 +383,8 @@ static void test_native_nontermination_fixture(void) {
     igraph_vector_int_list_clear(&memberships);
     set_ground_truth_primary_cover(&memberships);
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 2, true, -1, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 2, /* no count limits */ -1, -1, true, -1, true, true,
         NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     assert_overlapping_cover_valid(&memberships, 80, 2);
     IGRAPH_ASSERT(isfinite(quality));
@@ -398,8 +392,8 @@ static void test_native_nontermination_fixture(void) {
     /* Cap 1 remains a disjoint singleton control on the same fixture. */
     IGRAPH_ASSERT(igraph_vector_int_init(&membership, 0) == IGRAPH_SUCCESS);
     igraph_rng_seed(igraph_rng_default(), 0);
-    IGRAPH_ASSERT(igraph_community_leiden(
-        &graph, NULL, NULL, NULL, density, 0.01, 1, false, -1, true, true,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
+        &graph, NULL, NULL, NULL, density, 0.01, 1, /* no count limits */ -1, -1, false, -1, true, true,
         &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(igraph_vector_int_size(&membership) == 80);
     IGRAPH_ASSERT(isfinite(quality));
@@ -530,9 +524,9 @@ static void test_nash_disjoint_parameter_matrix(void) {
             const igraph_bool_t local_move_only = local_only ? true : false;
 
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, gamma, 0.01,
-                /*max_memberships=*/ 1, /*start=*/ false, /*n_iterations=*/ -1,
+                /*max_memberships=*/ 1, /* no count limits */ -1, -1, /*start=*/ false, /*n_iterations=*/ -1,
                 allow_isolation, local_move_only,
                 &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             IGRAPH_ASSERT(igraph_vector_int_size(&membership) == 10);
@@ -544,9 +538,9 @@ static void test_nash_disjoint_parameter_matrix(void) {
             snapshot_quality = quality;
 
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, gamma, 0.01,
-                1, /*start=*/ true, -1, allow_isolation, local_move_only,
+                1, /* no count limits */ -1, -1, /*start=*/ true, -1, allow_isolation, local_move_only,
                 &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_disjoint_memberships_equal(&membership, &snapshot);
             IGRAPH_ASSERT(igraph_almost_equals(quality, snapshot_quality, 1e-12));
@@ -577,9 +571,9 @@ static void test_nash_disjoint_parameter_matrix(void) {
             }
 
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, gamma, 0.01,
-                1, true, -1, allow_isolation, local_move_only,
+                1, /* no count limits */ -1, -1, true, -1, allow_isolation, local_move_only,
                 &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             IGRAPH_ASSERT(disjoint_is_nash_equilibrium(
                 &graph, &membership, gamma, allow_isolation));
@@ -587,9 +581,9 @@ static void test_nash_disjoint_parameter_matrix(void) {
             IGRAPH_ASSERT(igraph_vector_int_init_copy(&snapshot, &membership) == IGRAPH_SUCCESS);
             snapshot_quality = quality;
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, gamma, 0.01,
-                1, true, -1, allow_isolation, local_move_only,
+                1, /* no count limits */ -1, -1, true, -1, allow_isolation, local_move_only,
                 &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_disjoint_memberships_equal(&membership, &snapshot);
             IGRAPH_ASSERT(igraph_almost_equals(quality, snapshot_quality, 1e-12));
@@ -630,9 +624,9 @@ static void test_nash_omitted_smaller_target(void) {
         }
         VECTOR(membership)[5] = 1;
         igraph_rng_seed(igraph_rng_default(), 0);
-        IGRAPH_ASSERT(igraph_community_leiden(
+        IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
             &graph, NULL, NULL, NULL, gamma, 0.01,
-            1, true, -1, /*allow_isolation=*/ false,
+            1, /* no count limits */ -1, -1, true, -1, /*allow_isolation=*/ false,
             local_only ? true : false,
             &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
         IGRAPH_ASSERT(disjoint_is_nash_equilibrium(&graph, &membership, gamma, false));
@@ -655,9 +649,9 @@ static void test_nash_omitted_smaller_target(void) {
         }
         VECTOR(membership)[5] = 1;
         igraph_rng_seed(igraph_rng_default(), 0);
-        IGRAPH_ASSERT(igraph_community_leiden(
+        IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
             &graph, NULL, NULL, NULL, gamma, 0.01,
-            1, true, -1, true, local_only ? true : false,
+            1, /* no count limits */ -1, -1, true, -1, true, local_only ? true : false,
             &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
         IGRAPH_ASSERT(disjoint_is_nash_equilibrium(&graph, &membership, gamma, true));
     }
@@ -668,9 +662,9 @@ static void test_nash_omitted_smaller_target(void) {
         for (igraph_integer_t local_only = 0; local_only < 2; local_only++) {
             IGRAPH_ASSERT(igraph_vector_int_range(&membership, 0, 6) == IGRAPH_SUCCESS);
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, /*resolution=*/ -1.0, 0.01,
-                1, true, -1, iso ? true : false, local_only ? true : false,
+                1, /* no count limits */ -1, -1, true, -1, iso ? true : false, local_only ? true : false,
                 &membership, NULL, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             IGRAPH_ASSERT(disjoint_is_nash_equilibrium(
                 &graph, &membership, -1.0, iso ? true : false));
@@ -709,9 +703,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
 
             igraph_vector_int_list_clear(&memberships);
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, 0.2, 0.01,
-                /*max_memberships=*/ 2, /*start=*/ false, /*n_iterations=*/ -1,
+                /*max_memberships=*/ 2, /* no count limits */ -1, -1, /*start=*/ false, /*n_iterations=*/ -1,
                 allow_isolation, local_move_only,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_cover_valid(&memberships, 11, 2);
@@ -726,9 +720,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
             snapshot_quality = quality;
 
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, 0.2, 0.01,
-                2, true, -1, allow_isolation, local_move_only,
+                2, /* no count limits */ -1, -1, true, -1, allow_isolation, local_move_only,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_covers_equal(&memberships, &snapshot);
             IGRAPH_ASSERT(igraph_almost_equals(quality, snapshot_quality, 1e-12));
@@ -761,9 +755,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
             VECTOR(*igraph_vector_int_list_get_ptr(&memberships, 6))[0] = 2;
 
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, 1.0, 0.01,
-                2, true, -1, iso ? true : false, local_only ? true : false,
+                2, /* no count limits */ -1, -1, true, -1, iso ? true : false, local_only ? true : false,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_cover_valid(&memberships, 7, 2);
             IGRAPH_ASSERT(isfinite(quality));
@@ -776,9 +770,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
             }
             snapshot_quality = quality;
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, 1.0, 0.01,
-                2, true, -1, iso ? true : false, local_only ? true : false,
+                2, /* no count limits */ -1, -1, true, -1, iso ? true : false, local_only ? true : false,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_covers_equal(&memberships, &snapshot);
             IGRAPH_ASSERT(igraph_almost_equals(quality, snapshot_quality, 1e-12));
@@ -797,9 +791,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
         for (igraph_integer_t local_only = 0; local_only < 2; local_only++) {
             igraph_vector_int_list_clear(&memberships);
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, density, 0.01,
-                2, false, -1, iso ? true : false, local_only ? true : false,
+                2, /* no count limits */ -1, -1, false, -1, iso ? true : false, local_only ? true : false,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_cover_valid(&memberships, 80, 2);
             IGRAPH_ASSERT(isfinite(quality));
@@ -812,9 +806,9 @@ static void test_nash_overlapping_parameter_matrix(void) {
             }
             snapshot_quality = quality;
             igraph_rng_seed(igraph_rng_default(), 0);
-            IGRAPH_ASSERT(igraph_community_leiden(
+            IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
                 &graph, NULL, NULL, NULL, density, 0.01,
-                2, true, -1, iso ? true : false, local_only ? true : false,
+                2, /* no count limits */ -1, -1, true, -1, iso ? true : false, local_only ? true : false,
                 NULL, &memberships, &nb_clusters, &quality) == IGRAPH_SUCCESS);
             assert_overlapping_covers_equal(&memberships, &snapshot);
             IGRAPH_ASSERT(igraph_almost_equals(quality, snapshot_quality, 1e-12));
@@ -841,115 +835,115 @@ static void test_overlapping_input_contract(void) {
     igraph_vector_fill(&edge_weights, 1.0);
     igraph_vector_fill(&node_weights, 1.0);
 
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, IGRAPH_NAN, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, IGRAPH_INFINITY, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, DBL_MAX, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EOVERFLOW);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, IGRAPH_NAN,
-        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, IGRAPH_INFINITY,
-        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, -0.01,
-        2, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, false, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
 
     VECTOR(edge_weights)[0] = IGRAPH_NAN;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(edge_weights)[0] = IGRAPH_INFINITY;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(edge_weights)[0] = -1.0;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(edge_weights)[0] = 0.0;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(edge_weights)[0] = DBL_MAX;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EOVERFLOW);
     VECTOR(edge_weights)[0] = 1.0;
 
     VECTOR(node_weights)[0] = IGRAPH_NAN;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(node_weights)[0] = IGRAPH_INFINITY;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(node_weights)[0] = -1.0;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     VECTOR(node_weights)[0] = DBL_MAX;
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EOVERFLOW);
     igraph_vector_fill(&node_weights, 1.0);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, &node_weights, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
 
     /* Zero node weights and finite negative resolutions are in-domain. */
     igraph_vector_fill(&node_weights, 0.0);
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, -0.1, 0.0,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality)
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality)
         == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(isfinite(quality));
     igraph_vector_fill(&node_weights, 1.0);
 
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        3, false, 1, true, true, NULL, &memberships, &nb_clusters, &quality),
+        3, /* no count limits */ -1, -1, false, 1, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, &node_weights, NULL, 0.1, 0.01,
-        IGRAPH_INTEGER_MAX, false, 1, true, true,
+        IGRAPH_INTEGER_MAX, /* no count limits */ -1, -1, false, 1, true, true,
         NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
 
     IGRAPH_ASSERT(igraph_small(
         &invalid_graph, 2, IGRAPH_UNDIRECTED, 0, 0, 0, 1, -1) == IGRAPH_SUCCESS);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &invalid_graph, NULL, NULL, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     igraph_destroy(&invalid_graph);
 
     IGRAPH_ASSERT(igraph_empty(&invalid_graph, 2, IGRAPH_UNDIRECTED) == IGRAPH_SUCCESS);
-    CHECK_ERROR(igraph_community_leiden(
+    CHECK_ERROR(igraph_community_leiden_with_constraints(
         &invalid_graph, NULL, NULL, NULL, 0.1, 0.01,
-        2, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
+        2, /* no count limits */ -1, -1, false, 0, true, true, NULL, &memberships, &nb_clusters, &quality),
         IGRAPH_EINVAL);
     igraph_destroy(&invalid_graph);
 
@@ -991,9 +985,9 @@ static void test_positive_budget_original_quality_guard(void) {
     }
 
     /* Zero iterations establishes the exact phase-entry state and quality. */
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
-        3, true, 0, false, false,
+        3, /* no count limits */ -1, -1, true, 0, false, false,
         NULL, &memberships, &nb_clusters, &quality_before) == IGRAPH_SUCCESS);
     for (igraph_integer_t v = 0; v < 4; v++) {
         IGRAPH_ASSERT(igraph_vector_int_update(
@@ -1008,9 +1002,9 @@ static void test_positive_budget_original_quality_guard(void) {
      * exactly a local-moving-only iteration from the same seed, and never
      * worse than the start. */
     IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 1452719858) == IGRAPH_SUCCESS);
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
-        3, true, 1, false, false,
+        3, /* no count limits */ -1, -1, true, 1, false, false,
         NULL, &memberships, &nb_clusters, &quality_after) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(quality_after >= quality_before - 1e-12);
     {
@@ -1018,9 +1012,9 @@ static void test_positive_budget_original_quality_guard(void) {
         igraph_real_t quality_local;
         IGRAPH_ASSERT(igraph_vector_int_list_init_copy(&local_only, &snapshot) == IGRAPH_SUCCESS);
         IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 1452719858) == IGRAPH_SUCCESS);
-        IGRAPH_ASSERT(igraph_community_leiden(
+        IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
             &graph, &edge_weights, NULL, NULL, 0.5, 0.01,
-            3, true, 1, false, true,
+            3, /* no count limits */ -1, -1, true, 1, false, true,
             NULL, &local_only, &nb_clusters, &quality_local) == IGRAPH_SUCCESS);
         assert_overlapping_covers_equal(&memberships, &local_only);
         IGRAPH_ASSERT(igraph_almost_equals(quality_after, quality_local, 1e-12));
@@ -1056,8 +1050,8 @@ static void test_overlapping_diagnostic_trace(void) {
     IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 20260912) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(igraph_community_leiden_with_diagnostics(
         &graph, NULL, NULL, NULL, 0.2, 0.01,
-        3, false, 2, true, false, &memberships, &nb_clusters, &quality,
-        &move_trace, &projection_trace) == IGRAPH_SUCCESS);
+        3, /* no count limits */ -1, -1, false, 2, true, false, /* membership */ NULL, &memberships, &nb_clusters, &quality,
+        &move_trace, &projection_trace, /* counters */ NULL) == IGRAPH_SUCCESS);
 
     IGRAPH_ASSERT(igraph_matrix_ncol(&move_trace) ==
                   IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH);
@@ -1132,14 +1126,15 @@ static void test_overlapping_diagnostic_trace(void) {
 
     CHECK_ERROR(igraph_community_leiden_with_diagnostics(
         &graph, NULL, NULL, NULL, IGRAPH_NAN, 0.01,
-        3, true, 1, true, false, &memberships, &nb_clusters, &quality,
-        &failed_move_trace, &failed_projection_trace), IGRAPH_EINVAL);
+        3, /* no count limits */ -1, -1, true, 1, true, false, /* membership */ NULL, &memberships, &nb_clusters, &quality,
+        &failed_move_trace, &failed_projection_trace, /* counters */ NULL), IGRAPH_EINVAL);
     VERIFY_FINALLY_STACK();
 
+    /* At least one diagnostic output must be requested. */
     CHECK_ERROR(igraph_community_leiden_with_diagnostics(
         &graph, NULL, NULL, NULL, 0.2, 0.01,
-        1, true, 1, true, false, &memberships, &nb_clusters, &quality,
-        &failed_move_trace, &failed_projection_trace), IGRAPH_EINVAL);
+        3, /* no count limits */ -1, -1, true, 1, true, false, /* membership */ NULL, &memberships, &nb_clusters, &quality,
+        NULL, NULL, /* counters */ NULL), IGRAPH_EINVAL);
     VERIFY_FINALLY_STACK();
 
     igraph_matrix_destroy(&projection_trace);
@@ -1167,8 +1162,8 @@ static void test_overlapping_trace_label_counts(void) {
     }
     IGRAPH_ASSERT(igraph_rng_seed(igraph_rng_default(), 0) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(igraph_community_leiden_with_diagnostics(
-        &graph, NULL, NULL, NULL, 0.0, 0.01, 2, true, 2, true, false,
-        &memberships, &nb_clusters, &quality, &moves, &projections) == IGRAPH_SUCCESS);
+        &graph, NULL, NULL, NULL, 0.0, 0.01, 2, /* no count limits */ -1, -1, true, 2, true, false, /* membership */ NULL,
+        &memberships, &nb_clusters, &quality, &moves, &projections, /* counters */ NULL) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(igraph_matrix_nrow(&projections) == 2);
     IGRAPH_ASSERT(MATRIX(projections, 0, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_LOCAL) == 2);
     IGRAPH_ASSERT(MATRIX(projections, 0, IGRAPH_LEIDEN_OVERLAP_PROJECTION_LABELS_PROPOSED) == 1);
@@ -1208,9 +1203,9 @@ static void test_overlapping_interrupt_unwind(void) {
     interruption_poll_count = 0;
     interrupt_after_poll = 1;
     igraph_set_interruption_handler(interrupt_on_selected_poll);
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, NULL, NULL, NULL, 0.1, 0.01,
-        2, false, -1, true, true, NULL, &memberships, NULL, NULL)
+        2, /* no count limits */ -1, -1, false, -1, true, true, NULL, &memberships, NULL, NULL)
         == IGRAPH_INTERRUPTED);
     igraph_set_interruption_handler(NULL);
     igraph_vector_int_list_destroy(&memberships);
@@ -1223,9 +1218,9 @@ static void test_overlapping_interrupt_unwind(void) {
     interruption_poll_count = 0;
     interrupt_after_poll = 10;
     igraph_set_interruption_handler(interrupt_on_selected_poll);
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, NULL, NULL, NULL, 0.1, 0.01,
-        2, false, -1, true, true, NULL, &memberships, NULL, NULL)
+        2, /* no count limits */ -1, -1, false, -1, true, true, NULL, &memberships, NULL, NULL)
         == IGRAPH_INTERRUPTED);
     igraph_set_interruption_handler(NULL);
     igraph_vector_int_list_destroy(&memberships);
@@ -1246,9 +1241,9 @@ static void test_overlapping_interrupt_unwind(void) {
     interruption_poll_count = 0;
     interrupt_after_poll = 1;
     igraph_set_interruption_handler(interrupt_on_selected_poll);
-    IGRAPH_ASSERT(igraph_community_leiden(
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(
         &graph, NULL, NULL, NULL, 0.0, 0.01,
-        2, true, 1, true, false, NULL, &memberships, NULL, NULL)
+        2, /* no count limits */ -1, -1, true, 1, true, false, NULL, &memberships, NULL, NULL)
         == IGRAPH_INTERRUPTED);
     igraph_set_interruption_handler(NULL);
     igraph_vector_int_list_destroy(&memberships);
@@ -1517,20 +1512,20 @@ int main(void) {
 
         /* invalid max_memberships */
         CHECK_ERROR(
-            igraph_community_leiden(&graph, NULL, NULL, NULL, 0.1, 0.01, 0, 0, 2,
+            igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.1, 0.01, 0, /* no count limits */ -1, -1, 0, 2,
                                     1, 0, &membership, NULL, NULL, NULL),
             IGRAPH_EINVAL);
 
         /* overlapping mode without memberships list */
         CHECK_ERROR(
-            igraph_community_leiden(&graph, NULL, NULL, NULL, 0.1, 0.01, 2, 0, 2,
+            igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.1, 0.01, 2, /* no count limits */ -1, -1, 0, 2,
                                     1, 0, NULL, NULL, NULL, NULL),
             IGRAPH_EINVAL);
 
         /* directed graph */
         igraph_small(&directed_graph, 4, IGRAPH_DIRECTED, 0, 1, 1, 2, 2, 3, -1);
         CHECK_ERROR(
-            igraph_community_leiden(&directed_graph, NULL, NULL, NULL, 0.1, 0.01, 2, 0, 2,
+            igraph_community_leiden_with_constraints(&directed_graph, NULL, NULL, NULL, 0.1, 0.01, 2, /* no count limits */ -1, -1, 0, 2,
                                     1, 0, NULL, &memberships, NULL, NULL),
             IGRAPH_EINVAL);
         igraph_destroy(&directed_graph);

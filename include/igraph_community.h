@@ -245,15 +245,10 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden(
         const igraph_vector_t *vertex_in_weights,
         igraph_real_t resolution,
         igraph_real_t beta,
-        igraph_int_t max_memberships,
         igraph_bool_t start,
         igraph_int_t n_iterations,
-        igraph_bool_t allow_isolation,
-        igraph_bool_t local_move_only,
         igraph_vector_int_t *membership,
-        igraph_vector_int_list_t *memberships,
-        igraph_int_t *nb_clusters,
-        igraph_real_t *quality);
+        igraph_int_t *nb_clusters, igraph_real_t *quality);
 
 IGRAPH_EXPORT igraph_error_t igraph_community_leiden_with_constraints(
         const igraph_t *graph,
@@ -274,22 +269,75 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden_with_constraints(
         igraph_int_t *nb_clusters,
         igraph_real_t *quality);
 
-/** Columns returned by the opt-in overlapping Leiden accepted-move trace. */
+/**
+ * Layout version of the diagnostic outputs of
+ * igraph_community_leiden_with_diagnostics(): the columns of the move and
+ * projection traces and the indices of the counter vector. Version 3
+ * (1.0.0.5) traces partitions and covers, appends the level and
+ * occupied-community columns to the move trace, and adds the counters.
+ */
+#define IGRAPH_LEIDEN_TRACE_SCHEMA_VERSION 3
+
+/** Columns of the accepted-move trace of
+ * igraph_community_leiden_with_diagnostics(), for partitions and covers.
+ * The last three columns were appended in 1.0.0.5 (width 12 -> 15); all
+ * preceding column indices retain their original meanings. */
 typedef enum {
-    IGRAPH_LEIDEN_OVERLAP_MOVE_SEQUENCE = 0,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_STAGE,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_VERTEX,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_BEFORE,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_AFTER,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_ORIGINAL_WEIGHT,
-    IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH
-} igraph_leiden_overlap_move_trace_column_t;
+    IGRAPH_LEIDEN_MOVE_SEQUENCE = 0,
+    IGRAPH_LEIDEN_MOVE_STAGE,
+    IGRAPH_LEIDEN_MOVE_VERTEX,
+    IGRAPH_LEIDEN_MOVE_CARDINALITY_BEFORE,
+    IGRAPH_LEIDEN_MOVE_CARDINALITY_AFTER,
+    IGRAPH_LEIDEN_MOVE_PREDICTED_DELTA,
+    IGRAPH_LEIDEN_MOVE_DIRECT_DELTA,
+    IGRAPH_LEIDEN_MOVE_ABS_ERROR,
+    IGRAPH_LEIDEN_MOVE_TOLERANCE,
+    IGRAPH_LEIDEN_MOVE_QUALITY_BEFORE,
+    IGRAPH_LEIDEN_MOVE_QUALITY_AFTER,
+    IGRAPH_LEIDEN_MOVE_ORIGINAL_WEIGHT,
+    IGRAPH_LEIDEN_MOVE_LEVEL,
+    IGRAPH_LEIDEN_MOVE_OCCUPIED_BEFORE,
+    IGRAPH_LEIDEN_MOVE_OCCUPIED_AFTER,
+    IGRAPH_LEIDEN_MOVE_TRACE_WIDTH
+} igraph_leiden_move_trace_column_t;
+
+/* The names of 1.0.0.4, when only covers were traced. */
+typedef igraph_leiden_move_trace_column_t igraph_leiden_overlap_move_trace_column_t;
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_SEQUENCE IGRAPH_LEIDEN_MOVE_SEQUENCE
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_STAGE IGRAPH_LEIDEN_MOVE_STAGE
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_VERTEX IGRAPH_LEIDEN_MOVE_VERTEX
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_BEFORE IGRAPH_LEIDEN_MOVE_CARDINALITY_BEFORE
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_CARDINALITY_AFTER IGRAPH_LEIDEN_MOVE_CARDINALITY_AFTER
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_PREDICTED_DELTA IGRAPH_LEIDEN_MOVE_PREDICTED_DELTA
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_DIRECT_DELTA IGRAPH_LEIDEN_MOVE_DIRECT_DELTA
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_ABS_ERROR IGRAPH_LEIDEN_MOVE_ABS_ERROR
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_TOLERANCE IGRAPH_LEIDEN_MOVE_TOLERANCE
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_BEFORE IGRAPH_LEIDEN_MOVE_QUALITY_BEFORE
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_QUALITY_AFTER IGRAPH_LEIDEN_MOVE_QUALITY_AFTER
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_ORIGINAL_WEIGHT IGRAPH_LEIDEN_MOVE_ORIGINAL_WEIGHT
+#define IGRAPH_LEIDEN_OVERLAP_MOVE_TRACE_WIDTH IGRAPH_LEIDEN_MOVE_TRACE_WIDTH
+
+/** Indices of the counter vector of
+ * igraph_community_leiden_with_diagnostics(). */
+typedef enum {
+    IGRAPH_LEIDEN_COUNTER_SCHEMA_VERSION = 0,
+    IGRAPH_LEIDEN_COUNTER_MAX_MEMBERSHIPS,
+    IGRAPH_LEIDEN_COUNTER_MAX_TOTAL_COMMUNITIES,
+    IGRAPH_LEIDEN_COUNTER_N_COMMUNITIES,
+    IGRAPH_LEIDEN_COUNTER_ITERATIONS,
+    IGRAPH_LEIDEN_COUNTER_CERTIFICATE_SWEEPS,
+    IGRAPH_LEIDEN_COUNTER_AGGREGATE_LEVELS,
+    IGRAPH_LEIDEN_COUNTER_VISITS,
+    IGRAPH_LEIDEN_COUNTER_ACCEPTED_MOVES,
+    IGRAPH_LEIDEN_COUNTER_REJECTED_VISITS,
+    IGRAPH_LEIDEN_COUNTER_PROPOSALS,
+    IGRAPH_LEIDEN_COUNTER_PROPOSALS_IMPROVED,
+    IGRAPH_LEIDEN_COUNTER_PROPOSALS_TIED,
+    IGRAPH_LEIDEN_COUNTER_PROPOSALS_REJECTED,
+    IGRAPH_LEIDEN_COUNTER_MOVE_ROWS,
+    IGRAPH_LEIDEN_COUNTER_PROJECTION_ROWS,
+    IGRAPH_LEIDEN_COUNTER_WIDTH
+} igraph_leiden_counter_t;
 
 /** Columns returned by the opt-in overlapping Leiden projection trace.
  * The label-count columns were appended in 1.0.0.5 (width 19 -> 21);
@@ -327,15 +375,19 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden_with_diagnostics(
         igraph_real_t resolution,
         igraph_real_t beta,
         igraph_int_t max_memberships,
+        igraph_int_t max_total_communities,
+        igraph_int_t n_communities,
         igraph_bool_t start,
         igraph_int_t n_iterations,
         igraph_bool_t allow_isolation,
         igraph_bool_t local_move_only,
+        igraph_vector_int_t *membership,
         igraph_vector_int_list_t *memberships,
         igraph_int_t *nb_clusters,
         igraph_real_t *quality,
         igraph_matrix_t *move_trace,
-        igraph_matrix_t *projection_trace);
+        igraph_matrix_t *projection_trace,
+        igraph_vector_int_t *counters);
 
 IGRAPH_EXPORT igraph_error_t igraph_community_leiden_simple(
         const igraph_t *graph,

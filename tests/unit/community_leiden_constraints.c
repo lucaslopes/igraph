@@ -253,7 +253,7 @@ static void test_non_binding_bound_is_identity(void) {
         igraph_vector_int_list_init(&a, 0);
         igraph_vector_int_list_init(&b, 0);
         igraph_rng_seed(igraph_rng_default(), 11);
-        IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.2, 0.01, 3, false, -1,
+        IGRAPH_ASSERT(igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.2, 0.01, 3, /* no count limits */ -1, -1, false, -1,
                       iso, local, NULL, &a, &na, &qa) == IGRAPH_SUCCESS);
         igraph_rng_seed(igraph_rng_default(), 11);
         IGRAPH_ASSERT(igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.2, 0.01,
@@ -284,7 +284,7 @@ static void test_multilevel_bound_witness(void) {
         igraph_vector_int_push_back(igraph_vector_int_list_get_ptr(&rows, v), 0);
     }
     igraph_rng_seed(igraph_rng_default(), 3);
-    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 2, true, 1,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.5, 0.01, 2, /* no count limits */ -1, -1, true, 1,
                   false, false, NULL, &rows, &nb, NULL) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(nb == 2); /* isolation disabled locally, token stage splits */
     for (igraph_int_t v = 0; v < 4; v++) {
@@ -310,8 +310,7 @@ static void test_zero_budget_outputs(void) {
 
     igraph_small(&graph, 4, IGRAPH_UNDIRECTED, 0, 1, 2, 3, -1);
     igraph_vector_int_init(&membership, 0);
-    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 1, false, 0,
-                  true, false, &membership, NULL, &nb, &quality) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, false, 0, &membership, &nb, &quality) == IGRAPH_SUCCESS);
     /* Singleton start: four clusters, no internal edges, CPM quality
      * (1/2m) sum_c (2 E_c - gamma n_c^2) = -4 * 0.5 / 4. */
     IGRAPH_ASSERT(nb == 4);
@@ -320,8 +319,7 @@ static void test_zero_budget_outputs(void) {
     /* A supplied start is reindexed and scored as given. */
     VECTOR(membership)[0] = 7; VECTOR(membership)[1] = 7;
     VECTOR(membership)[2] = 3; VECTOR(membership)[3] = 3;
-    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 1, true, 0,
-                  true, false, &membership, NULL, &nb, &quality) == IGRAPH_SUCCESS);
+    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, true, 0, &membership, &nb, &quality) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(nb == 2);
     IGRAPH_ASSERT(VECTOR(membership)[0] == VECTOR(membership)[1]);
     IGRAPH_ASSERT(VECTOR(membership)[2] == VECTOR(membership)[3]);
@@ -330,7 +328,7 @@ static void test_zero_budget_outputs(void) {
     /* The overlapping path already reported its start state. */
     igraph_vector_int_list_init(&rows, 0);
     nb = -12345;
-    IGRAPH_ASSERT(igraph_community_leiden(&graph, NULL, NULL, NULL, 0.5, 0.01, 2, false, 0,
+    IGRAPH_ASSERT(igraph_community_leiden_with_constraints(&graph, NULL, NULL, NULL, 0.5, 0.01, 2, /* no count limits */ -1, -1, false, 0,
                   true, false, NULL, &rows, &nb, &quality) == IGRAPH_SUCCESS);
     IGRAPH_ASSERT(nb == 4);
 
