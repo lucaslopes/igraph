@@ -10,7 +10,7 @@
 
 - Overlapping Leiden local moving is several times faster on large graphs: mass reconciliation runs every `max(1024, n)` queue pops instead of every 1024, the duplicate final certificate sweep of local-moving-only runs is skipped, only positive candidate gains are sorted, and omitted labels are found through a mass-ordered index instead of a scan over all labels. The disjoint local mover uses the same index for undirected graphs. Returned covers can differ from 1.0.0.4 where ties are resolved by label identifiers.
 - The overlapping candidate buffer is sized from the neighbourhood and grows on demand instead of reserving `n * max_memberships + 1` entries per call.
-- Overlapping multilevel proposals are compared with the cover reached by the same iteration's local moving, which is restored on rejection. A proposal within the numerical margin of that cover is kept when it occupies fewer labels (token projection merges duplicate community bodies), at most `n` times per call.
+- Overlapping multilevel proposals are compared with the cover reached by the same iteration's local moving, which is restored on rejection. A proposal within the numerical margin of that cover is kept when it occupies fewer labels, at most `n` times per call. The rule checks occupied counts, not equality of community bodies; deleting duplicate bodies is not generally potential-neutral.
 - Start labels of overlapping covers may lie below `n * max_memberships` (previously below `n`).
 - Projection diagnostics append `labels_local` and `labels_proposed` to the
   previous 19 columns, reporting proposed counts before rollback. Consumers
@@ -33,7 +33,7 @@
 
 ### Other
 
-- `src/community/leiden.c` is reorganized into documented sections with a table of contents and small single-purpose functions. Results are bit-identical to the previous development build on 50,000 randomized instances.
+- `src/community/leiden.c` is reorganized into documented sections with a table of contents and small single-purpose functions. The reorganization alone is bit-identical to the preceding development build on 50,000 randomized instances; the separately listed correctness fixes can change trajectories.
 
 ## [1.0.0]
 
